@@ -108,7 +108,7 @@ public class SecureServer {
     private static void handleClientMessages(Socket sender, ObjectInputStream input, Socket receiver) {
         try {
             while (true) {
-                String encryptedMessageBase64 = (String) input.readObject();
+                byte[] encryptedMessageBase64 = (byte[]) input.readObject();
                 if (clientOutputStreams.containsKey(receiver)) {
                     clientOutputStreams.get(receiver).writeObject(encryptedMessageBase64);
                     clientOutputStreams.get(receiver).flush();
