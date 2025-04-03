@@ -10,6 +10,10 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.HashMap;
 
+//TODO
+// Implementar BD
+
+
 public class SecureServer {
     private static final int PORT = 5000;
     private static HashMap<Socket, ObjectOutputStream> clientOutputStreams = new HashMap<>();
