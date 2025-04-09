@@ -1,14 +1,16 @@
 package org.Server;
 
 import org.Keys.RSAKeys;
+import org.DataBase.DBConnect;
 
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.util.HashMap;
+import java.util.*;
 
 //TODO
 // Implementar BD
@@ -17,6 +19,35 @@ import java.util.HashMap;
 public class SecureServer {
     private static final int PORT = 5000;
     private static HashMap<Socket, ObjectOutputStream> clientOutputStreams = new HashMap<>();
+
+    public static Object[] splitDecodedBytes(byte[] data, byte delimiter, int expectedParts) {
+        List<byte[]> parts = new ArrayList<>();
+        int start = 0;
+
+        for (int i = 0; i < data.length && parts.size() < expectedParts - 1; i++) {
+            if (data[i] == delimiter) {
+                parts.add(Arrays.copyOfRange(data, start, i));
+                start = i + 1;
+            }
+        }
+
+        // Add the last part (pKey)
+        parts.add(Arrays.copyOfRange(data, start, data.length));
+
+        // Prepare result: 3 strings + 1 byte[]
+        String command = new String(parts.get(0), StandardCharsets.UTF_8);
+        String username = new String(parts.get(1), StandardCharsets.UTF_8);
+        String hashedPassword = new String(parts.get(2), StandardCharsets.UTF_8);
+        byte[] pKey = parts.get(3);
+
+        return new Object[] { command, username, hashedPassword, pKey };
+    }
+
+    //TODO
+    // Acrescentar login através do servidor
+    // Guardar chave pública do cliente na BD
+    // Guardar chave privada e chave AES num ficheiro
+
 
     public static void main(String[] args) {
         try {
@@ -28,6 +59,8 @@ public class SecureServer {
             // Start server socket
             ServerSocket serverSocket = new ServerSocket(PORT);
             System.out.println("Server started. Waiting for clients...");
+
+            System.out.println(DBConnect.getConnection());
 
             while (true) {
                 // Accept two clients
@@ -49,6 +82,39 @@ public class SecureServer {
                 // Store client output streams
                 clientOutputStreams.put(client1, out1);
                 clientOutputStreams.put(client2, out2);
+
+                byte[] receivedBytes = (byte[]) in1.readObject();
+
+                // Decode Base64
+                byte[] decoded = Base64.getDecoder().decode(receivedBytes);
+                byte delimiter = (byte) ':';
+
+                Object[] splitParts = splitDecodedBytes(decoded, delimiter, 4);
+
+                String command = (String) splitParts[0];
+                String username = (String) splitParts[1];
+                String hashedPassword = (String) splitParts[2];
+                byte[] pKey = (byte[]) splitParts[3];
+
+                System.out.println("Command: " + command);
+                System.out.println("Username: " + username);
+                System.out.println("Hashed Password: " + hashedPassword);
+                System.out.println("Public Key (bytes): " + Arrays.toString(pKey));
+
+                String response;
+
+                if (command.equalsIgnoreCase("REGISTER")) {
+                    response = DBConnect.RegiPOST(username, hashedPassword, pKey);
+                    out1.writeObject(response); // ✅ Send response back to client
+                    out1.flush();
+
+                } else if (command.equalsIgnoreCase("LOGIN")) {
+                    // Placeholder for LOGIN logic
+                    response = "Login not implemented yet";
+                    out1.writeObject(response);
+                    out1.flush();
+                }
+
 
                 // Send server public key to both clients
                 out1.writeObject(serverPublicKey);

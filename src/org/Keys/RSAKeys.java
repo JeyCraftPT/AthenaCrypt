@@ -22,6 +22,11 @@ public class RSAKeys {
         return cachedKeyPair;
     }
 
+
+    public static byte[] getKeyBytes(PrivateKey key) {
+        return key.getEncoded();
+    }
+
     // Encrypt using RSA public key
     // Encrypt byte array using RSA public key
     public static byte[] encrypt(byte[] data, PublicKey publicKey) throws Exception {
