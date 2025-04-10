@@ -54,5 +54,24 @@ public class DBConnect {
         }
     }
 
+    public static boolean LoginPOST(String Username, String Pass) {
+        String query = "SELECT client_pass FROM client WHERE client_name = ?";
+
+        try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
+            try (PreparedStatement stmt = conn.prepareStatement(query)) {
+                stmt.setString(1, Username);
+                ResultSet rs = stmt.executeQuery();
+
+                if (rs.next()) {
+                    String storedPass = rs.getString("client_pass");
+                    return storedPass.equals(Pass);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Login failed: " + e.getMessage());
+        }
+        return false;
+    }
+
 
 }
