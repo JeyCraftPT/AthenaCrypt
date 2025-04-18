@@ -13,6 +13,7 @@ import java.security.PublicKey;
 import java.util.*;
 
 //TODO
+// Error: No suitable driver found for org.mariadb.jdbc.Driver
 // Implementar BD
 
 // Save Before caos

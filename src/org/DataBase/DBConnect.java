@@ -5,23 +5,26 @@ import java.sql.*;
 public class DBConnect {
 
     private static final String JDBC_DRIVER = "org.mariadb.jdbc.Driver";
-    private static final String DB_URL = "jdbc:mariadb://127.0.0.1:3306/";
+    private static final String DB_URL = "jdbc:mariadb://127.0.0.1:3306/ProjetoFinal";
 
     private static final String USER = "root";
     private static final String PASSWORD = "Bolas132";
 
     public static Connection getConnection() {
         try {
+            Class.forName("org.mariadb.jdbc.Driver");
             Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD );
             System.out.println("✅ Connected to MariaDB successfully!");
             return conn;
         } catch (SQLException e) {
             System.err.println("❌ Connection failed: " + e.getMessage());
             throw new RuntimeException(e);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(e);
         }
     }
 
-    public static String RegiPOST(String Username, String Pass, byte[] PKey) {
+    /*public static String RegiPOST(String Username, String Pass, byte[] PKey) {
         String checkSQL = "SELECT 1 FROM client WHERE client_name = ?";
         String insertSQL = "INSERT INTO client (client_name, client_pass, client_IKey) VALUES (?, ?, ?)";
 
@@ -44,6 +47,38 @@ public class DBConnect {
                 insertStmt.setString(1, Username);
                 insertStmt.setString(2, Pass);
                 insertStmt.setBytes(3, PKey);
+
+                int rowsAffected = insertStmt.executeUpdate();
+                return "Inserted rows: " + rowsAffected;
+            }
+
+        } catch (SQLException e) {
+            return "Error: " + e.getMessage();
+        }
+    }*/
+
+    public static String RegiPOST(String Username, String Pass) throws ClassNotFoundException {
+        String checkSQL = "SELECT 1 FROM client WHERE client_name = ?";
+        String insertSQL = "INSERT INTO client (client_name, client_pass) VALUES (?, ?)";
+        /*Class.forName("org.mariadb.jdbc.Driver");*/
+        try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
+
+            // First, check if username exists
+            try (PreparedStatement checkStmt = conn.prepareStatement(checkSQL)) {
+                checkStmt.setString(1, Username);
+                ResultSet rs = checkStmt.executeQuery();
+
+                if (rs.next()) {
+                    // Username already exists
+                    return "Username already in use";
+
+                }
+            }
+
+            // Username is available — insert new user
+            try (PreparedStatement insertStmt = conn.prepareStatement(insertSQL)) {
+                insertStmt.setString(1, Username);
+                insertStmt.setString(2, Pass);
 
                 int rowsAffected = insertStmt.executeUpdate();
                 return "Inserted rows: " + rowsAffected;

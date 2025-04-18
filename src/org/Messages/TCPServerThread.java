@@ -26,99 +26,115 @@ public class TCPServerThread implements Runnable {
 
     @Override
     public void run() {
-
         try {
             // Setup streams
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
             ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
 
+            // Generate RSA key pair for server-client encryption
+            KeyPair serverKeyPair = RSAKeys.getKeyPair();
+            PublicKey serverPublicKey = serverKeyPair.getPublic();
+            PrivateKey serverPrivateKey = serverKeyPair.getPrivate();
 
-            // Step 1: Receive client public key and username
-            String username = (String) in.readObject(); // Client should send this
+            // Step 0: Send server public key to client
+            out.writeObject(serverPublicKey);
+
+            // Step 1: Receive login or register info (Base64-encoded byte[])
+            Object authObject = in.readObject();
+            if (!(authObject instanceof byte[])) {
+                out.writeObject("❌ Invalid authentication format.");
+                socket.close();
+                return;
+            }
+
+            byte[] credentialsEncoded = (byte[]) authObject;
+            byte[] decodedBytes = Base64.getDecoder().decode(credentialsEncoded);
+            String decoded = new String(decodedBytes);
+
+            String[] parts = decoded.split(":", 3);
+            if (parts.length < 3) {
+                out.writeObject("❌ Invalid format: missing fields.");
+                socket.close();
+                return;
+            }
+
+            String command = parts[0];
+            String username = parts[1];
+            String passHash = parts[2];
+            boolean authenticated = false;
+
+            if (command.equalsIgnoreCase("REGISTER") && parts.length == 3) {
+                // Extract public key bytes safely
+                /*byte[] publicKeyBytes = parts[3].getBytes(); // ideally decode Base64 here*/
+                /*String result = DBConnect.RegiPOST(username, passHash, publicKeyBytes);*/
+                String result = DBConnect.RegiPOST(username, passHash);
+                out.writeObject(result);
+
+                if (!result.equalsIgnoreCase("Username already in use")) {
+                    authenticated = true;
+                }
+
+            } else if (command.equalsIgnoreCase("LOGIN") && parts.length == 3) {
+                authenticated = DBConnect.LoginPOST(username, passHash);
+                out.writeObject(authenticated ? "✅ Login successful" : "❌ Invalid credentials");
+            } else {
+                out.writeObject("❌ Unknown command or bad format.");
+                socket.close();
+                return;
+            }
+
+            if (!authenticated) {
+                socket.close(); // Kick out unauthorized user
+                return;
+            }
+
+            // Step 2: Receive client's actual public key object after auth
             PublicKey clientPublicKey = (PublicKey) in.readObject();
 
-            // Step 2: Register user
+            // Step 3: Register user in memory
             User user = new User(username, socket, out, clientPublicKey);
-            TCPServerMain.registerUser(username, user); // Add a registerUser() method
+            TCPServerMain.registerUser(username, user);
 
-            // Step 3: Welcome message
+            // Step 4: Send welcome message
             out.writeObject("Welcome " + username + "! Users online: " + TCPServerMain.getUserList());
 
-            // Step 4: Send list of users
+            // Step 5: Send user list
             out.writeObject("Users online:");
             for (String userName : TCPServerMain.getUserList()) {
                 out.writeObject(userName);
             }
 
-            // 📥 Start listening for messages from the client
+            // ✅ Now start listening for chat messages
             while (true) {
                 Object incoming = in.readObject();
 
-                if (incoming instanceof String) {
-                    String message = (String) incoming;
+                if (incoming instanceof String message) {
+                    if (message.startsWith("TO:")) {
+                        String[] msgParts = message.substring(3).split("\\|", 2);
+                        if (msgParts.length == 2) {
+                            String receiverName = msgParts[0];
+                            String messageText = msgParts[1];
 
-                    if (incoming instanceof byte[]) {
-                        byte[] credentialsEncoded = (byte[]) incoming;
-                        byte[] decodedBytes = Base64.getDecoder().decode(credentialsEncoded);
-                        String decoded = new String(decodedBytes);
-
-                        // Now split and process the command: REGISTER or LOGIN
-                        String[] parts = decoded.split(":");
-
-                        if (parts.length >= 3) {
-                            String command = parts[0];
-                            String username2 = parts[1];
-
-                            if (command.equals("REGISTER") && parts.length == 4) {
-                                String passHash = parts[2];
-
-                                // Grab everything after the 3rd colon as the public key bytes
-                                int publicKeyStart = decoded.indexOf(parts[3]);
-                                byte[] publicKeyBytes = Arrays.copyOfRange(decodedBytes, publicKeyStart, decodedBytes.length);
-
-                                String result = DBConnect.RegiPOST(username2, passHash, publicKeyBytes);
-                                out.writeObject(result);
-                            } else if (command.equals("LOGIN") && parts.length == 3) {
-                                String passHash = parts[2];
-
-                                boolean loginSuccess = DBConnect.LoginPOST(username2, passHash);
-                                out.writeObject(loginSuccess ? "Login successful" : "Invalid credentials");
+                            User receiver = TCPServerMain.getUser(receiverName);
+                            if (receiver != null) {
+                                receiver.getOut().writeObject("Message from " + username + ": " + messageText);
                             } else {
-                                out.writeObject("Invalid command format.");
+                                out.writeObject("❌ User " + receiverName + " not found.");
                             }
+                        } else {
+                            out.writeObject("❌ Invalid message format. Use: TO:username|Your message");
                         }
-                        // Example message format: "TO:username|Hello!"
-                        else if (message.startsWith("TO:")) {
-                            String[] partss = message.substring(3).split("\\|", 2);
-                            if (partss.length == 2) {
-                                String receiverName = partss[0];
-                                String messageText = partss[1];
-
-                                // 🔁 Route message to recipient
-                                User receiver = TCPServerMain.getUser(receiverName);
-                                if (receiver != null) {
-                                    ObjectOutputStream receiverOut = receiver.getOut();
-                                    receiverOut.writeObject("Message from " + username + ": " + messageText);
-                                } else {
-                                    out.writeObject("User " + receiverName + " not found.");
-                                }
-                            } else {
-                                out.writeObject("Invalid message format. Use: TO:username|Your message");
-                            }
-                        }
+                    } else {
+                        out.writeObject("⚠️ Unknown command: " + message);
                     }
                 }
-
-
-                // Close the connection
-            /*socket.close();
-            System.out.println("Client " + clientNumber + " " + socket.getInetAddress() + " has disconnected.");*/
-
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+
 }
 
 
