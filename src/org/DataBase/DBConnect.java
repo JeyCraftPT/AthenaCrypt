@@ -57,9 +57,9 @@ public class DBConnect {
         }
     }*/
 
-    public static String RegiPOST(String Username, String Pass) throws ClassNotFoundException {
+    public static String RegiPOST(String Username, String Pass, byte[] publicKey) throws ClassNotFoundException {
         String checkSQL = "SELECT 1 FROM client WHERE client_name = ?";
-        String insertSQL = "INSERT INTO client (client_name, client_pass) VALUES (?, ?)";
+        String insertSQL = "INSERT INTO client (client_name, client_pass, client_pKey) VALUES (?, ?, ?)";
         /*Class.forName("org.mariadb.jdbc.Driver");*/
         try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
 
@@ -79,6 +79,7 @@ public class DBConnect {
             try (PreparedStatement insertStmt = conn.prepareStatement(insertSQL)) {
                 insertStmt.setString(1, Username);
                 insertStmt.setString(2, Pass);
+                insertStmt.setBytes(3, publicKey);
 
                 int rowsAffected = insertStmt.executeUpdate();
                 return "Inserted rows: " + rowsAffected;
@@ -89,8 +90,8 @@ public class DBConnect {
         }
     }
 
-    public static boolean LoginPOST(String Username, String Pass) {
-        String query = "SELECT client_pass FROM client WHERE client_name = ?";
+    public static byte[] LoginPOST(String Username, String Pass) {
+        String query = "SELECT client_pKey, client_pass FROM client WHERE client_name = ?";
 
         try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
             try (PreparedStatement stmt = conn.prepareStatement(query)) {
@@ -99,14 +100,18 @@ public class DBConnect {
 
                 if (rs.next()) {
                     String storedPass = rs.getString("client_pass");
-                    return storedPass.equals(Pass);
+                    if (storedPass.equals(Pass)) {
+                        return rs.getBytes("client_pKey");  // return the BLOB as byte[]
+                    }
                 }
             }
         } catch (SQLException e) {
             System.err.println("Login failed: " + e.getMessage());
         }
-        return false;
+        return null;  // Return null if login fails
     }
+
+
 
 
 }

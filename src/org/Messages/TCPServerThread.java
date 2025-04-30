@@ -51,8 +51,8 @@ public class TCPServerThread implements Runnable {
             byte[] decodedBytes = Base64.getDecoder().decode(credentialsEncoded);
             String decoded = new String(decodedBytes);
 
-            String[] parts = decoded.split(":", 3);
-            if (parts.length < 3) {
+            String[] parts = decoded.split(":", 4);
+            if (parts.length < 4) {
                 out.writeObject("❌ Invalid format: missing fields.");
                 socket.close();
                 return;
@@ -61,13 +61,14 @@ public class TCPServerThread implements Runnable {
             String command = parts[0];
             String username = parts[1];
             String passHash = parts[2];
+            String publicKeyByte = parts[3];
             boolean authenticated = false;
 
-            if (command.equalsIgnoreCase("REGISTER") && parts.length == 3) {
+            if (command.equalsIgnoreCase("REGISTER") && parts.length == 4) {
                 // Extract public key bytes safely
-                /*byte[] publicKeyBytes = parts[3].getBytes(); // ideally decode Base64 here*/
-                /*String result = DBConnect.RegiPOST(username, passHash, publicKeyBytes);*/
-                String result = DBConnect.RegiPOST(username, passHash);
+                byte[] publicKeyBytes = parts[3].getBytes(); // ideally decode Base64 here
+                String result = DBConnect.RegiPOST(username, passHash, publicKeyBytes);
+                /*String result = DBConnect.RegiPOST(username, passHash);*/
                 out.writeObject(result);
 
                 if (!result.equalsIgnoreCase("Username already in use")) {
