@@ -102,6 +102,8 @@ public class DBConnect {
                     String storedPass = rs.getString("client_pass");
                     if (storedPass.equals(Pass)) {
                         return rs.getBytes("client_pKey");  // return the BLOB as byte[]
+                    }else{
+                        return "Wrong password!".getBytes();
                     }
                 }
             }
