@@ -12,16 +12,12 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.*;
 
-//TODO
-// Implementar BD
-// Check this ^
 
 //TODO
 // Método para sair da aplicação, fechar socket e sair da lista de online
 
 //TODO
 // Acrescentar login através do servidor
-// Guardar chave pública do cliente na BD
 // Guardar chave privada e chave AES num ficheiro
 
 
@@ -60,6 +56,11 @@ public class TCPServerMain {
     public static User getUser(String username) {
         return connectedUsers.get(username);
     }
+
+    public static void removeUser(String username) {
+        connectedUsers.remove(username);
+    }
+
 
 
     public static void main(String[] args){

@@ -81,8 +81,11 @@ public class DBConnect {
                 insertStmt.setString(2, Pass);
                 insertStmt.setBytes(3, publicKey);
 
+
                 int rowsAffected = insertStmt.executeUpdate();
-                return "Inserted rows: " + rowsAffected;
+                /*return "Inserted rows: " + rowsAffected;*/
+                System.out.println("olaaaAAAAAAAAAAAAAAAAA");
+                return "ola BD";
             }
 
         } catch (SQLException e) {

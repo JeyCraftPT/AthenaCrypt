@@ -64,36 +64,37 @@ public class TCPServerThread implements Runnable {
             String publicKeyByte = parts[3];
             boolean authenticated = false;
 
-            while (command != "register" | command != "login") {
+            while (!command.equalsIgnoreCase("register") && !command.equalsIgnoreCase("login")) {
                 out.writeObject("Wrong command! Try again.");
-                command = in.readLine();
-                if (command.equalsIgnoreCase("REGISTER") && parts.length == 4) {
-                    // Extract public key bytes safely
-                    byte[] publicKeyBytes = parts[3].getBytes(); // ideally decode Base64 here
-                    String result = DBConnect.RegiPOST(username, passHash, publicKeyBytes);
-                    /*String result = DBConnect.RegiPOST(username, passHash);*/
-                    out.writeObject(result);
 
-                    if (!result.equalsIgnoreCase("Username already in use")) {
-                        authenticated = true;
-                    }
-
-                } else if (command.equalsIgnoreCase("LOGIN") && parts.length == 3) {
-                    byte[] returnPublicK = DBConnect.LoginPOST(username, passHash);
-                    byte[] Bad = "Wrong password!".getBytes();
-
-
-                    //TODO
-                    // Aqui tem de devolver alguma coisa tipo username e chave ou algo parecido
-
-
-                    out.writeObject(Arrays.equals(returnPublicK, Bad) ? "❌ Invalid credentials" : "✅ Login successful");
-                } else {
-                    out.writeObject("❌ Unknown command or bad format.");
-                    socket.close();
-                    return;
-                }
             }
+            out.writeObject("ola");
+            /*command = in.readLine();*/
+            if (command.equalsIgnoreCase("REGISTER") && parts.length == 4) {
+                System.out.println("OOASFOANSOFBAISBGAIBFAISBD");
+                out.writeObject("hello");
+                // Extract public key bytes safely
+                byte[] publicKeyBytes = parts[3].getBytes(); // ideally decode Base64 here
+                String result = DBConnect.RegiPOST(username, passHash, publicKeyBytes);
+                /*String result = DBConnect.RegiPOST(username, passHash);*/
+                out.writeObject(result);
+
+                if (!result.equalsIgnoreCase("Username already in use")) {
+                    authenticated = true;
+                }
+
+            } else if (command.equalsIgnoreCase("LOGIN") && parts.length == 3) {
+                byte[] returnPublicK = DBConnect.LoginPOST(username, passHash);
+                byte[] Bad = "Wrong password!".getBytes();
+
+
+                //TODO
+                // Aqui tem de devolver alguma coisa tipo username e chave ou algo parecido
+
+
+                out.writeObject(Arrays.equals(returnPublicK, Bad) ? "❌ Invalid credentials" : "✅ Login successful");
+            }
+
             if (!authenticated) {
                 socket.close(); // Kick out unauthorized user
                 return;
@@ -112,14 +113,23 @@ public class TCPServerThread implements Runnable {
             // Step 5: Send user list
             out.writeObject("Users online:");
             for (String userName : TCPServerMain.getUserList()) {
+                out.writeObject("miau");
                 out.writeObject(userName);
             }
 
+            // ✅ Now start listening for chat messages
             // ✅ Now start listening for chat messages
             while (true) {
                 Object incoming = in.readObject();
 
                 if (incoming instanceof String message) {
+                    if (message.equalsIgnoreCase("quit")) {
+                        System.out.println("User " + username + " disconnected.");
+                        TCPServerMain.removeUser(username); // Optional: cleanup user from active list
+                        socket.close();
+                        break; // Exit thread
+                    }
+
                     if (message.startsWith("TO:")) {
                         String[] msgParts = message.substring(3).split("\\|", 2);
                         if (msgParts.length == 2) {
@@ -128,7 +138,7 @@ public class TCPServerThread implements Runnable {
 
                             User receiver = TCPServerMain.getUser(receiverName);
                             if (receiver != null) {
-                                receiver.getOut().writeObject("Message from " + username + ": " + messageText);
+                                receiver.getOut().writeObject("FROM:" + username + "|" + messageText);
                             } else {
                                 out.writeObject("❌ User " + receiverName + " not found.");
                             }
@@ -140,6 +150,7 @@ public class TCPServerThread implements Runnable {
                     }
                 }
             }
+
 
         } catch (Exception e) {
             e.printStackTrace();
