@@ -14,7 +14,7 @@ import java.util.*;
 
 
 //TODO
-// Método para sair da aplicação, fechar socket e sair da lista de online
+// Metodo para sair da aplicação, fechar socket e sair da lista de online
 
 //TODO
 // Acrescentar login através do servidor

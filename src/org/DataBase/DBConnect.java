@@ -57,10 +57,10 @@ public class DBConnect {
         }
     }*/
 
-    public static String RegiPOST(String Username, String Pass, byte[] publicKey) throws ClassNotFoundException {
+    public static String RegiPOST(String Username, String Pass, byte[] publicKey, int online) throws ClassNotFoundException {
         String checkSQL = "SELECT 1 FROM client WHERE client_name = ?";
-        String insertSQL = "INSERT INTO client (client_name, client_pass, client_pKey) VALUES (?, ?, ?)";
-        /*Class.forName("org.mariadb.jdbc.Driver");*/
+        String insertSQL = "INSERT INTO client (client_name, client_pass, client_pKey, client_online) VALUES (?, ?, ?, ?)";
+
         try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
 
             // First, check if username exists
@@ -80,12 +80,12 @@ public class DBConnect {
                 insertStmt.setString(1, Username);
                 insertStmt.setString(2, Pass);
                 insertStmt.setBytes(3, publicKey);
+                insertStmt.setInt(4, online);
 
 
                 int rowsAffected = insertStmt.executeUpdate();
-                /*return "Inserted rows: " + rowsAffected;*/
-                System.out.println("olaaaAAAAAAAAAAAAAAAAA");
-                return "ola BD";
+                return "Inserted rows: " + rowsAffected;
+
             }
 
         } catch (SQLException e) {
@@ -105,6 +105,8 @@ public class DBConnect {
                     String storedPass = rs.getString("client_pass");
                     if (storedPass.equals(Pass)) {
                         return rs.getBytes("client_pKey");  // return the BLOB as byte[]
+
+
                     }else{
                         return "Wrong password!".getBytes();
                     }
