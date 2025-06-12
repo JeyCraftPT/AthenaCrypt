@@ -84,11 +84,7 @@ public class TCPServerThread implements Runnable {
                 /*String result = DBConnect.RegiPOST(username, passHash);*/
                 out.writeObject(result);
 
-                //TODO
-                // WTF remove this
-                if (!result.equalsIgnoreCase("Username already in use")) {
-                    authenticated = true;
-                }
+
 
             } else if (command.equalsIgnoreCase("LOGIN") && parts.length == 4) {
                 byte[] returnPublicK = DBConnect.LoginPOST(username, passHash);
@@ -96,7 +92,7 @@ public class TCPServerThread implements Runnable {
 
 
                 //TODO
-                // Aqui tem de devolver alguma coisa tipo username e chave ou algo parecido(WIP - must check if working)
+                // Aqui tem de devolver alguma coisa tipo username e chave ou algo parecido (WIP - must check if working)
 
 
                 if(Arrays.equals(returnPublicK, Bad)){
@@ -123,12 +119,17 @@ public class TCPServerThread implements Runnable {
             // Step 5: Send user list
 
             //TODO
-            // Remove this shit and use db client_online and query
-            out.writeObject("Users online:");
-            for (String userName : TCPServerMain.getUserList()) {
-                out.writeObject("miau");
-                out.writeObject(userName);
-            }
+            // Remove this shit and use db client_online and query (WIP- CHECK IF WORKING)
+            out.writeObject("users online:" + DBConnect.getOnline());
+
+            //TODO
+            // Adicionar metodo de escolher com quem falar
+
+            String message = in.readLine();
+            String regex = "[:\\.\\s]";
+            String[] splitter =  message.split(regex);
+            String receiver =  splitter[1];
+
 
             // ✅ Now start listening for chat messages
             while (true) {
@@ -137,17 +138,18 @@ public class TCPServerThread implements Runnable {
                 if (incoming instanceof String message) {
                     if (message.equalsIgnoreCase("quit")) {
                         System.out.println("User " + username + " disconnected.");
-                        TCPServerMain.removeUser(username); // Optional: cleanup user from active list
+                        DBConnect.goOffline(username);
+                        System.out.println(DBConnect.goOffline(username));
                         socket.close();
                         break; // Exit thread
                     }
 
-                    if (message.startsWith("TO:")) {
+
                         //TODO
                         // Check this for shits and giggles
                         String[] msgParts = message.substring(3).split("\\|", 2);
                         if (msgParts.length == 2) {
-                            String receiverName = msgParts[0];
+                            String receiverName = receiver;
                             String messageText = msgParts[1];
 
                             User receiver = TCPServerMain.getUser(receiverName);
@@ -163,7 +165,7 @@ public class TCPServerThread implements Runnable {
                         out.writeObject("⚠️ Unknown command: " + message);
                     }
                 }
-            }
+
 
 
         } catch (Exception e) {
