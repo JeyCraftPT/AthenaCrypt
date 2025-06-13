@@ -63,7 +63,21 @@ public class DBConnect {
         }
     }
 
-    public static byte[] LoginPOST(String Username, String Pass) {
+    public static class LoginPostResult {
+        public String message;
+        public byte[] publicKeyBytes;
+
+        public LoginPostResult(String message) {
+            this.message = message;
+        }
+
+        public LoginPostResult(String message, byte[] publicKeyBytes) {
+            this.message = message;
+            this.publicKeyBytes = publicKeyBytes;
+        }
+    }
+
+    public static LoginPostResult LoginPOST(String Username, String Pass) {
         String query = "SELECT client_pKey, client_pass FROM client WHERE client_name = ?";
 
         try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
@@ -74,13 +88,14 @@ public class DBConnect {
                 if (rs.next()) {
                     String storedPass = rs.getString("client_pass");
                     if (storedPass.equals(Pass)) {
-                        return rs.getBytes("client_pKey");  // return the BLOB as byte[]
+                        return new LoginPostResult("Login successfully", rs.getBytes("client_pKey"));  // return the BLOB as byte[]
 
 
                     }else{
-                        return "Wrong password!".getBytes();
+                        return new LoginPostResult("Wrong password", null);
                     }
                 }
+                return new LoginPostResult("No user found", null);
             }
         } catch (SQLException e) {
             System.err.println("Login failed: " + e.getMessage());
