@@ -1,17 +1,33 @@
+// src/org/Packets/RegisterPacket.java
 package org.Packets;
 
-public class RegisterPacket extends Packet {
-    private String username;
-    private String password;
-    private byte[] publicKeyBytes;
+import java.io.Serializable;
 
-    public RegisterPacket(String username, String password) {
-        this.username = username;
-        this.password = password;
+public class RegisterPacket extends Packet implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final String username;
+    private final String password;
+    private final byte[] publicKeyBytes;
+
+    public RegisterPacket(String username, String password, byte[] publicKeyBytes) {
+        this.username        = username;
+        this.password        = password;
+        this.publicKeyBytes  = publicKeyBytes;
     }
 
-    public String getUsername() { return username; }
-    public String getPassword() { return password; }
+    public String getUsername() {
+        return username;
+    }
+
+    public String getPassword() {
+        return password;
+    }
+
+    /** Returns the raw RSA public-key bytes for DB storage. */
+    public byte[] getPublicKeyBytes() {
+        return publicKeyBytes;
+    }
 
     @Override
     public String getType() {

@@ -1,37 +1,56 @@
+// src/org/Packets/PacketUtils.java
 package org.Packets;
 
 import javax.crypto.Cipher;
-import java.io.*;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.nio.ByteBuffer;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 
 public class PacketUtils {
 
-    public static byte[] encryptPacket(Packet packet, PublicKey key) throws Exception {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-            oos.writeObject(packet);
-        }
-
-        byte[] plainBytes = bos.toByteArray();
-
-        Cipher cipher = Cipher.getInstance("RSA");
-        cipher.init(Cipher.ENCRYPT_MODE, key);
-        return cipher.doFinal(plainBytes);
+    // RSA-encrypt the one-off session key + IV
+    public static byte[] encryptKeyPacket(byte[] keyPacket, PublicKey rsaPub) throws Exception {
+        Cipher rsa = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        rsa.init(Cipher.ENCRYPT_MODE, rsaPub);
+        return rsa.doFinal(keyPacket);
     }
 
-    public static Packet decryptPacket(byte[] encryptedData, PrivateKey key) throws Exception {
-        Cipher cipher = Cipher.getInstance("RSA");
-        cipher.init(Cipher.DECRYPT_MODE, key);
-        byte[] decryptedBytes = cipher.doFinal(encryptedData);
+    // RSA-decrypt the one-off session key + IV
+    public static byte[] decryptKeyPacket(byte[] encKeyPkt, PrivateKey rsaPriv) throws Exception {
+        Cipher rsa = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        rsa.init(Cipher.DECRYPT_MODE, rsaPriv);
+        return rsa.doFinal(encKeyPkt);
+    }
 
-        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(decryptedBytes))) {
-            Object obj = ois.readObject();
-            if (obj instanceof Packet packet) {
-                return packet;
-            } else {
-                throw new IOException("Decrypted object is not a valid Packet.");
-            }
+    // AES-encrypt any Packet after handshake
+    public static byte[] encryptPacketAES(Packet pkt, SecretKey aesKey, byte[] iv) throws Exception {
+        // 1) serialize
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+            oos.writeObject(pkt);
+        }
+        byte[] plain = baos.toByteArray();
+
+        // 2) AES/CBC/PKCS5Padding
+        Cipher aes = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        aes.init(Cipher.ENCRYPT_MODE, aesKey, new IvParameterSpec(iv));
+        return aes.doFinal(plain);
+    }
+
+    // AES-decrypt any Packet after handshake
+    public static Packet decryptPacketAES(byte[] blob, SecretKey aesKey, byte[] iv) throws Exception {
+        Cipher aes = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        aes.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
+        byte[] plain = aes.doFinal(blob);
+
+        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(plain))) {
+            return (Packet) ois.readObject();
         }
     }
 }

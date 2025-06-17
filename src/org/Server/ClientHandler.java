@@ -1,80 +1,69 @@
+// src/org/Server/ClientHandler.java
 package org.Server;
 
 import org.DataBase.DBConnect;
 import org.Packets.*;
-
 import java.io.*;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.List;
-import java.util.function.Consumer;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.KeyFactory;
+import java.security.spec.X509EncodedKeySpec;
 
 public class ClientHandler implements Runnable {
     private final Socket clientSocket;
     private final ClientEventListener eventListener;
-    private final PublicKey serverPublicKey;
-    private final PrivateKey serverPrivateKey;
-    private PublicKey clientPublicKey;
+    private final PublicKey serverPub;
+    private final PrivateKey serverPriv;
+    private SecretKey sessionKey;
+    private byte[] iv;
+    private PublicKey clientPub;
     private String username;
 
-    public ClientHandler(Socket clientSocket, ClientEventListener eventListener,
-                         PublicKey serverPublicKey, PrivateKey serverPrivateKey) {
-        this.clientSocket = clientSocket;
-        this.eventListener = eventListener;
-        this.serverPublicKey = serverPublicKey;
-        this.serverPrivateKey = serverPrivateKey;
+    public ClientHandler(Socket sock, ClientEventListener lst,
+                         PublicKey sp, PrivateKey spriv) {
+        this.clientSocket   = sock;
+        this.eventListener  = lst;
+        this.serverPub      = sp;
+        this.serverPriv     = spriv;
     }
 
     @Override
     public void run() {
         try (
                 ObjectOutputStream output = new ObjectOutputStream(clientSocket.getOutputStream());
-                ObjectInputStream input = new ObjectInputStream(clientSocket.getInputStream())
+                ObjectInputStream  input  = new ObjectInputStream(clientSocket.getInputStream())
         ) {
-            // 1. Send server public key first
-            output.writeObject(new PublicKeyPacket(serverPublicKey.getEncoded()));
+            // 1) send server RSA public
+            output.writeObject(new PublicKeyPacket(serverPub.getEncoded()));
             output.flush();
 
-            // 2. Expect client public key
-            Object firstObj = input.readObject();
-            if (!(firstObj instanceof PublicKeyPacket clientPkPacket)) {
-                System.out.println("Client did not send public key, closing connection: " + clientSocket);
-                clientSocket.close();
-                return;
-            }
-            this.clientPublicKey = clientPkPacket.getPublicKey();
-            System.out.println("Received client public key from: " + clientSocket);
+            // 2) receive AES handshake
+            byte[] encKeyPkt = (byte[])input.readObject();
+            byte[] keyPkt    = PacketUtils.decryptKeyPacket(encKeyPkt, serverPriv);
 
-            // 3. Encrypted message loop
+            ByteBuffer kb = ByteBuffer.wrap(keyPkt);
+            byte[] keyBytes = new byte[kb.getInt()]; kb.get(keyBytes);
+            this.iv        = new byte[kb.getInt()];      kb.get(iv);
+            this.sessionKey= new SecretKeySpec(keyBytes, "AES");
+            System.out.println("✅ Session key established.");
+
+            // 3) Now all packets via AES
             while (true) {
-                try {
-                    Object encryptedObj = input.readObject();
-                    if (!(encryptedObj instanceof byte[] encryptedBytes)) {
-                        System.err.println("Expected byte[] but got: " + encryptedObj.getClass());
-                        continue;
-                    }
-
-                    Packet packet = PacketUtils.decryptPacket(encryptedBytes, serverPrivateKey);
-                    handlePacket(packet, output);
-
-                } catch (EOFException e) {
-                    System.out.println("Client disconnected: " + clientSocket);
-
-                    eventListener.onClientAction("Logout", this.username);
-
-                    break;
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    // send back an error InfoPacket
-                    InfoPacket err = new InfoPacket("Decryption or deserialization failed.");
-                    byte[] resp = PacketUtils.encryptPacket(err, clientPublicKey);
-                    output.writeObject(resp);
-                }
+                byte[] raw = (byte[])input.readObject();
+                Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
+                handlePacket(pkt, output);
             }
-
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (EOFException eof) {
+            System.out.println("Client disconnected: " + username);
+            DBConnect.goOffline(username);
+            eventListener.onClientAction("Logout", username);
+        } catch (Exception ex) {
+            ex.printStackTrace();
         }
     }
 
@@ -82,63 +71,69 @@ public class ClientHandler implements Runnable {
         switch (packet.getType()) {
             case "Register" -> {
                 RegisterPacket reg = (RegisterPacket) packet;
-                System.out.println("Register: " + reg.getUsername());
-                eventListener.onClientAction("Register", sentPkt -> {
-                    try {
-                        String result = DBConnect.RegiPOST(reg.getUsername(), reg.getPassword(),
-                                clientPublicKey.getEncoded(), 0);
-                        InfoPacket info = new InfoPacket(result);
-                        byte[] encrypted = PacketUtils.encryptPacket(info, clientPublicKey);
-                        output.writeObject(encrypted);
-                        output.flush();
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
-                });
-            }
+                System.out.println("Register attempt: " + reg.getUsername());
 
+                // 1) Call your DB layer to store username, password, and client's public key
+                String dbResult = DBConnect.RegiPOST(
+                        reg.getUsername(),
+                        reg.getPassword(),
+                        reg.getPublicKeyBytes(),  // make sure RegisterPacket carries this
+                        0                         // whatever your "role" or flag parameter is
+                );
+
+                // 2) Build an InfoPacket with the DB's result message
+                InfoPacket info = new InfoPacket(dbResult);
+
+                // 3) AES‐encrypt it and send back to client
+                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey, iv);
+                output.writeObject(resp);
+                output.flush();
+            }
             case "Login" -> {
-                LoginPacket loginPacket = (LoginPacket) packet;
-                System.out.println("Login: " + loginPacket.getUsername());
-                this.username = loginPacket.getUsername();
+                LoginPacket lp = (LoginPacket)packet;
+                this.username = lp.getUsername();
+                DBConnect.LoginPostResult res = DBConnect.LoginPOST(lp.getUsername(), lp.getPassword());
+                InfoPacket info = new InfoPacket(res.message);
+                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey, iv);
+                output.writeObject(resp);
+                output.flush();
+                if (!res.isSuccess()) return;
 
-                // Pass a Consumer<Packet> that sends any Packet back to this client
-                eventListener.onClientAction("Login", loginPacket.getUsername(), sentPkt -> {
-                    try {
-                        System.out.println("Consumer sending packet of :" + sentPkt.getType());
+                DBConnect.goOnline(lp.getUsername());
+                // reconstruct clientPub
+                X509EncodedKeySpec spec = new X509EncodedKeySpec(res.publicKeyBytes);
+                this.clientPub = KeyFactory.getInstance("RSA").generatePublic(spec);
 
-                        DBConnect.LoginPostResult result = DBConnect.LoginPOST(loginPacket.getUsername(), loginPacket.getPassword());
-                        System.out.println("Login result: " + result.message);
-                        PublicKeyPacket publicKeyPacket = new PublicKeyPacket(result.publicKeyBytes);
-                        byte[] encrypted = PacketUtils.encryptPacket(sentPkt, publicKeyPacket.getPublicKey());
-                        output.writeObject(encrypted);
-                        System.out.println("User public key sent");
-                        output.flush();
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
-                });
+                // send user list
+                List<String> online = DBConnect.getOnlineUsers();
+                UserListPacket ul = new UserListPacket(online);
+                byte[] listEnc = PacketUtils.encryptPacketAES(ul, sessionKey, iv);
+                output.writeObject(listEnc);
+                output.flush();
+
+                eventListener.onClientAction("Login", username);
             }
-
             case "Message" -> {
-                MessagePacket msg = (MessagePacket) packet;
-                System.out.println("Message: " + msg.getMessage());
-                eventListener.onClientAction("Message", sentPkt -> {
-                    try {
-                        InfoPacket ack = new InfoPacket("Message sent successfully.");
-                        byte[] encrypted = PacketUtils.encryptPacket(ack, clientPublicKey);
-                        output.writeObject(encrypted);
-                        output.flush();
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
-                });
+                MessagePacket msg = (MessagePacket)packet;
+                eventListener.onClientAction("Message", username + ": " + msg.getMessage());
+                // ack
+                InfoPacket ack = new InfoPacket("Sent.");
+                byte[] resp = PacketUtils.encryptPacketAES(ack, sessionKey, iv);
+                output.writeObject(resp);
+                output.flush();
             }
 
+            case "UserListRequest" ->{
+                List<String> online = DBConnect.getOnlineUsers();
+                UserListPacket resp = new UserListPacket(online);
+                byte[] enc = PacketUtils.encryptPacketAES(resp, sessionKey, iv);
+                output.writeObject(enc);
+                output.flush();
+            }
             default -> {
-                InfoPacket unknown = new InfoPacket("Unknown packet type.");
-                byte[] encrypted = PacketUtils.encryptPacket(unknown, clientPublicKey);
-                output.writeObject(encrypted);
+                InfoPacket unk = new InfoPacket("Unknown packet.");
+                byte[] resp = PacketUtils.encryptPacketAES(unk, sessionKey, iv);
+                output.writeObject(resp);
                 output.flush();
             }
         }

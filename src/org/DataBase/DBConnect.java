@@ -10,7 +10,7 @@ public class DBConnect {
     private static final String DB_URL = "jdbc:mariadb://127.0.0.1:3306/ProjetoFinal";
 
     private static final String USER = "root";
-    private static final String PASSWORD = "root";
+    private static final String PASSWORD = "";
 
     public static Connection getConnection() {
         try {
@@ -64,18 +64,27 @@ public class DBConnect {
     }
 
     public static class LoginPostResult {
-        public String message;
-        public byte[] publicKeyBytes;
+        public final boolean success;
+        public final String message;
+        public final byte[] publicKeyBytes;
 
         public LoginPostResult(String message) {
-            this.message = message;
+            this.success        = false;
+            this.message        = message;
+            this.publicKeyBytes = null;
         }
 
         public LoginPostResult(String message, byte[] publicKeyBytes) {
-            this.message = message;
+            this.success        = (publicKeyBytes != null);
+            this.message        = message;
             this.publicKeyBytes = publicKeyBytes;
         }
+
+        public boolean isSuccess() {
+            return success;
+        }
     }
+
 
     public static LoginPostResult LoginPOST(String Username, String Pass) {
         String query = "SELECT client_pKey, client_pass FROM client WHERE client_name = ?";
@@ -104,26 +113,16 @@ public class DBConnect {
     }
 
 
-    public static String getOnline() {
-        String query = "SELECT client_name FROM client WHERE client_online = ?";
-        List<String> onlineUsers = new ArrayList<>();
-
-        try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD);
-             PreparedStatement stmt = conn.prepareStatement(query)) {
-
-            stmt.setByte(1, (byte) 1);
-            ResultSet rs = stmt.executeQuery();
-
-            while (rs.next()) {
-                onlineUsers.add(rs.getString("client_name"));
-            }
-
+    public static void goOnline(String username) {
+        String sql = "UPDATE client SET client_online = ? WHERE client_name = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setByte(1, (byte)1);
+                    ps.setString(2, username);
+                    ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("Query failed: " + e.getMessage());
-            return null;
+            System.err.println("Failed to set user online: " + e.getMessage());
         }
-
-        return String.join(", ", onlineUsers);
     }
 
     public static String goOffline(String username) {
@@ -134,16 +133,33 @@ public class DBConnect {
 
             stmt.setByte(1, (byte) 0);
             stmt.setString(2, username);
-            ResultSet rs = stmt.executeQuery();
-
-
+            int rows = stmt.executeUpdate();
+            return rows + " user set offline";
 
         } catch (SQLException e) {
             System.err.println("Query failed: " + e.getMessage());
             return null;
         }
+    }
 
-        return "User" + username + "has gone offline";
+    public static List<String> getOnlineUsers() {
+        String query = "SELECT client_name FROM client WHERE client_online = ?";
+        List<String> onlineUsers = new ArrayList<>();
+
+        try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD);
+             PreparedStatement stmt = conn.prepareStatement(query)) {
+
+            stmt.setByte(1, (byte) 1);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                onlineUsers.add(rs.getString("client_name"));
+            }
+
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to fetch online users", e);
+        }
+
+        return onlineUsers;
     }
 
 
