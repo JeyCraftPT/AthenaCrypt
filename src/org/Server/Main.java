@@ -11,19 +11,19 @@ import java.net.Socket;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 import java.util.function.Consumer;
 
 public class Main implements ClientEventListener {
 
     List<String> clients = new ArrayList<>();
+    static HashMap<String, Socket> users = new HashMap<>();
+    static HashMap<Socket, ClientHandler> clientHandlers = new HashMap<>();
 
     public static int PORT = 5000;
 
     public static void main(String[] args){
-        new Main().startServer(); // Use an instance so we can pass `this`
+        new Main().startServer();
     }
 
     public void startServer() {
@@ -40,8 +40,8 @@ public class Main implements ClientEventListener {
                 System.out.println("Waiting for clients...");
                 Socket clientSocket = serverSocket.accept();
                 System.out.println("New client connected: " + clientSocket);
-
                 ClientHandler clientHandler = new ClientHandler(clientSocket, this, serverPublicKey, serverPrivateKey); // `this` is the listener
+                clientHandlers.put(clientSocket, clientHandler);
                 new Thread(clientHandler).start();
             }
 
@@ -78,11 +78,14 @@ public class Main implements ClientEventListener {
             }
         }
 
+    /*HashMap<Socket, String> users = new HashMap<>();*/
+
     @Override
-    public void onClientAction(String action, String username, Consumer<Packet> callback) {
+    public void onClientAction(String action, String username, Socket socket, Consumer<Packet> callback) {
         switch (action) {
             case "Login" -> {
                 clients.add(clients.size(), username);
+                users.put(username, socket);
                 UserListPacket userListPacket = new UserListPacket(clients);
                 callback.accept(userListPacket);
             }
@@ -90,6 +93,10 @@ public class Main implements ClientEventListener {
                 callback.accept(new InfoPacket("Unknown action."));
             }
         }
+    }
+
+    public Map<String,Socket> getUsers() {
+        return Collections.unmodifiableMap(users);
     }
 
 

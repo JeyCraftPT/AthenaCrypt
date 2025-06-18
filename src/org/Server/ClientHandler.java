@@ -23,6 +23,7 @@ public class ClientHandler implements Runnable {
     private byte[] iv;
     private PublicKey clientPub;
     private String username;
+    public ObjectOutputStream output;
 
     public ClientHandler(Socket sock, ClientEventListener lst,
                          PublicKey sp, PrivateKey spriv) {
@@ -34,10 +35,11 @@ public class ClientHandler implements Runnable {
 
     @Override
     public void run() {
-        try (
-                ObjectOutputStream output = new ObjectOutputStream(clientSocket.getOutputStream());
-                ObjectInputStream  input  = new ObjectInputStream(clientSocket.getInputStream())
-        ) {
+
+        try {
+            ObjectInputStream  input  = new ObjectInputStream(clientSocket.getInputStream());
+            output = new ObjectOutputStream(clientSocket.getOutputStream());
+
             // 1) send server RSA public
             output.writeObject(new PublicKeyPacket(serverPub.getEncoded()));
             output.flush();
@@ -57,6 +59,17 @@ public class ClientHandler implements Runnable {
                 byte[] raw = (byte[])input.readObject();
                 Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
                 handlePacket(pkt, output);
+                break;
+            }
+            System.out.println("miau");
+            while (true){
+                Object obj = input.readObject();
+                if (!(obj instanceof Packet)) {
+                    throw new IOException("Expected Packet, got " + obj.getClass());
+                }
+                Packet raw = (Packet) obj;
+                handlePacket(raw, output);
+
             }
         } catch (EOFException eof) {
             System.out.println("Client disconnected: " + username);
@@ -111,7 +124,9 @@ public class ClientHandler implements Runnable {
                 output.writeObject(listEnc);
                 output.flush();
 
-                eventListener.onClientAction("Login", username);
+                eventListener.onClientAction("Login", username, this.clientSocket, sentPacket -> {
+
+                });
             }
             case "Message" -> {
                 MessagePacket msg = (MessagePacket)packet;
@@ -126,9 +141,19 @@ public class ClientHandler implements Runnable {
             case "UserListRequest" ->{
                 List<String> online = DBConnect.getOnlineUsers();
                 UserListPacket resp = new UserListPacket(online);
-                byte[] enc = PacketUtils.encryptPacketAES(resp, sessionKey, iv);
-                output.writeObject(enc);
+                /*byte[] enc = PacketUtils.encryptPacketAES(resp, sessionKey, iv);*/
+                output.writeObject(resp);
                 output.flush();
+            }
+
+            case "DirectMessage" ->{
+                DirectMessagePacket msg = (DirectMessagePacket)packet;
+                Socket s = Main.users.get(msg.getRecipient());
+                ClientHandler a = Main.clientHandlers.get(s);
+                System.out.println(msg.getRecipient());
+                System.out.println(s.getRemoteSocketAddress());
+                a.output.writeObject(msg);
+
             }
             default -> {
                 InfoPacket unk = new InfoPacket("Unknown packet.");

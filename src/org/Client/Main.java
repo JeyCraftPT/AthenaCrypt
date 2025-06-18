@@ -140,14 +140,20 @@ public class Main {
             new Thread(() -> {
                 try {
                     while (true) {
-                        byte[] raw = (byte[]) input.readObject();
-                        Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
-                        switch (pkt.getType()) {
-                            case "Info"     -> System.out.println("[Server] " + ((InfoPacket)pkt).getMessage());
-                            case "UserList" -> System.out.println("[Update] " + ((UserListPacket)pkt).getUsers());
+                        /*Packet raw = (Packet) input.readObject();*/
+                        Object obj = input.readObject();
+                        Packet raw = (Packet) obj;
+                        /*Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);*/
+                        switch (raw.getType()) {
+                            case "Info"     -> System.out.println("[Server] " + ((InfoPacket)raw).getMessage());
+                            case "UserList" -> System.out.println("[Update] " + ((UserListPacket)raw).getUsers());
+                            case "DirectMessage" -> System.out.println("[Direct Message] " + ((DirectMessagePacket)raw).getMessage());
                         }
                     }
+                    //TODO
+                    // da exception porque o package n vem cifrado
                 } catch (Exception e) {
+                    e.printStackTrace();
                     System.out.println("Listener stopped.");
                 }
             }, "Listener").start();
@@ -159,11 +165,25 @@ public class Main {
                 if (msg.equalsIgnoreCase("exit")) break;
                 else if (msg.equalsIgnoreCase("refresh")) {
                     UserListRequestPacket req = new UserListRequestPacket();
-                    byte[] encReq = PacketUtils.encryptPacketAES(req, sessionKey, iv);
-                    output.writeObject(encReq);
+                   /* byte[] encReq = PacketUtils.encryptPacketAES(req, sessionKey, iv);*/
+                    output.writeObject(req);
                     output.flush();
                     continue;
-                };
+                } else if (msg.equalsIgnoreCase("select")) {
+                    // prompt explicitly so user knows what to type
+                    System.out.print("Enter recipient: ");
+                    String user = scanner.nextLine().trim();
+
+                    System.out.print("Enter message: ");
+                    String message = scanner.nextLine();
+
+                    DirectMessagePacket req = new DirectMessagePacket(user, message);
+                    output.writeObject(req);
+                    output.flush();
+                    // make sure we jump back to the top of the loop
+                    continue;
+                }
+                ;
                 MessagePacket mp = new MessagePacket(msg);
                 byte[] encMsg = PacketUtils.encryptPacketAES(mp, sessionKey, iv);
                 output.writeObject(encMsg);
