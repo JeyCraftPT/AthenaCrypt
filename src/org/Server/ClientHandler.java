@@ -150,10 +150,18 @@ public class ClientHandler implements Runnable {
                 DirectMessagePacket msg = (DirectMessagePacket)packet;
                 Socket s = Main.users.get(msg.getRecipient());
                 ClientHandler a = Main.clientHandlers.get(s);
+
+                //TODO
+                // cena da cifra
+
                 System.out.println(msg.getRecipient());
                 System.out.println(s.getRemoteSocketAddress());
                 a.output.writeObject(msg);
 
+            }
+            case "AESAnswer_Cena" ->{
+                //TODO
+                // fazer isto conforme linha 190 Client/Main.java
             }
             default -> {
                 InfoPacket unk = new InfoPacket("Unknown packet.");

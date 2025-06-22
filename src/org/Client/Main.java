@@ -1,5 +1,7 @@
 package org.Client;
 
+import org.Keys.AESKeys;
+import org.Keys.RSAKeys;
 import org.Packets.*;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -32,6 +34,10 @@ public class Main {
                 Scanner scanner = new Scanner(System.in)
         ) {
             System.out.println("Connected to server.");
+
+            String username = null;
+            PublicKey userPub = null;
+            PrivateKey userPriv = null;
 
             // 1) Receive RSA server public key
             Object o = input.readObject();
@@ -98,6 +104,10 @@ public class Main {
                     System.err.println("Registration failed; private key not saved.");
                     return;
                 }
+
+                userPub = userKP.getPublic();
+                username = u;
+                userPriv = userKP.getPrivate();
             }
             // LOGIN
             else {
@@ -105,8 +115,8 @@ public class Main {
                 System.out.print("Password: ");  String p = scanner.nextLine();
 
                 // load private key and derive public (not resent)
-                PrivateKey userPriv = loadPrivateKeyFromFile(p, u + "_private_key.enc");
-                PublicKey userPub = derivePublicKey(userPriv);
+                PrivateKey userPrivF = loadPrivateKeyFromFile(p, u + "_private_key.enc");
+                PublicKey userPubF = derivePublicKey(userPriv);
                 System.out.println("🔑 Loaded key from " + u + "_private_key.enc");
 
                 // send LoginPacket under AES
@@ -134,20 +144,92 @@ public class Main {
                     throw new IOException("Expected UserListPacket, got: " + maybeList.getType());
                 }
                 System.out.println("👥 Online users: " + ul.getUsers());
+
+                userPub = userPubF;
+                username = u;
+                userPriv = userPrivF;
             }
 
             // 4) start listener thread (AES)
+            PrivateKey finalUserPriv = userPriv;
+            String finalUsername = username;
+            String finalUsername1 = username;
+            PublicKey finalUserPub = userPub;
             new Thread(() -> {
                 try {
                     while (true) {
-                        /*Packet raw = (Packet) input.readObject();*/
                         Object obj = input.readObject();
                         Packet raw = (Packet) obj;
-                        /*Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);*/
+
+                        //TODO
+                        // metodo para salvar chave usada/recebida
+
                         switch (raw.getType()) {
                             case "Info"     -> System.out.println("[Server] " + ((InfoPacket)raw).getMessage());
                             case "UserList" -> System.out.println("[Update] " + ((UserListPacket)raw).getUsers());
-                            case "DirectMessage" -> System.out.println("[Direct Message] " + ((DirectMessagePacket)raw).getMessage());
+                            //case "DirectMessage" -> System.out.println("[Direct Message] " + ((DirectMessagePacket)raw).getMessage());
+                            case "DirectMessage" ->{
+                                System.out.println("Direct Message Packet");
+                                String sender = ((DirectMessagePacket)raw).getSender();
+                                System.out.println("[Server] " + sender);
+
+                                byte[] message = AESKeys.decrypt(((DirectMessagePacket)raw).getMessage(), sessionKey);
+
+                            }
+                            case "AesResquest" -> {
+                                System.out.println("AesRequest Packet");
+
+                                String who = ((AESRequest)raw).getSender();
+                                System.out.println("[Sender] " + who);
+
+                                PublicKey cena = ((AESRequest)raw).getSenderPub();
+
+                                SecretKey miau = AESKeys.generateSessionKey();
+
+                                // Packet com sender/reciver/senderPub/senderAES
+                                AESAnswer_Cena kms = new AESAnswer_Cena(finalUsername1, who, finalUserPub, RSAKeys.encrypt(miau.getEncoded(),cena));
+
+                                output.writeObject(kms);
+
+                                //TODO
+                                // Adicionar metodo para adicionar a chave AES num ficheiro chamado username_SessionKey_denc.enc
+                                // chaves neste ficheiro serão usadas para decifrar mensages
+                                // cifrar ficheiro com pass do user
+
+                                /*// who this key is for:
+                                String reci = ((AESRequest) raw).getSender();
+                                System.out.println("[Server] recipient = " + reci);
+
+                                // decrypt the AES session key bytes with your RSA private key
+                                byte[] sessionKeyBytes = RSAKeys
+                                        .decrypt(((AESRequest) raw).getSecretKey().getEncoded(), finalUserPriv);
+
+                                // build the filename and the line to write
+                                String filename = finalUsername + "_SessionKeyCrp.enc";
+                                String line     = reci + " : "
+                                        + Base64.getEncoder().encodeToString(sessionKeyBytes);
+
+                                // append this mapping to the file (creates it if necessary)
+                                try (FileWriter fw = new FileWriter(filename, true)) {
+                                    fw.write(line);
+                                    fw.write(System.lineSeparator());
+                                } catch (IOException e) {
+                                    System.err.println("❌ Failed to save session key: " + e.getMessage());
+                                }
+
+                                System.out.println("🔐 Saved session key entry to: " + filename);
+*/
+
+
+                            }
+                            case "AESAnswer_Cena" ->{
+                                System.out.println("AESAnswer_Cena Packet");
+                                //TODO
+                                // fazer packet que tenha (sender, reci, RSA(AES))
+                                // dar refactor aos nomes dos packets
+                                // acrescentar packets no ClientHandler.java
+                            }
+
                         }
                     }
                     //TODO
@@ -170,19 +252,27 @@ public class Main {
                     output.flush();
                     continue;
                 } else if (msg.equalsIgnoreCase("select")) {
-                    // prompt explicitly so user knows what to type
                     System.out.print("Enter recipient: ");
-                    String user = scanner.nextLine().trim();
+                    String recipient = scanner.nextLine().trim();
 
-                    System.out.print("Enter message: ");
-                    String message = scanner.nextLine();
+                    AESRequest raw = new AESRequest(username, recipient, userPub);
 
-                    DirectMessagePacket req = new DirectMessagePacket(user, message);
-                    output.writeObject(req);
-                    output.flush();
-                    // make sure we jump back to the top of the loop
-                    continue;
+                    //TODO
+                    // trocar isto por verificar a chave no ficheiro
+                    // caso chave existar avisar e n fazer nada
+
+                    try {
+                        Thread.sleep(2000);  // 1000ms
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt(); // restore interrupt
+                    }
+
+
+
                 }
+                //TODO
+                // add /msg para poder estar a mandar msg a pessoas e poder sair com um comando específico
+                // o /select serve para a troca de chaves ig...?
                 ;
                 MessagePacket mp = new MessagePacket(msg);
                 byte[] encMsg = PacketUtils.encryptPacketAES(mp, sessionKey, iv);
@@ -257,3 +347,78 @@ public class Main {
         return KeyFactory.getInstance("RSA").generatePublic(spec);
     }
 }
+
+/*
+else if (msg.equalsIgnoreCase("select")) {
+        System.out.print("Enter recipient: ");
+String recipient = scanner.nextLine().trim();
+
+// where we persist DCP keys
+String dcpFilename = username + "_SessionKeyDCP.enc";
+SecretKey dcpKey = null;
+
+// 1) Try to load an existing key from file
+File keyFile = new File(dcpFilename);
+                    if (keyFile.exists()) {
+        try (BufferedReader br = new BufferedReader(new FileReader(keyFile))) {
+String line;
+                            while ((line = br.readLine()) != null) {
+String[] parts = line.split(" : ");
+                                if (parts.length == 2 && parts[0].equals(recipient)) {
+byte[] keyBytes = Base64.getDecoder().decode(parts[1]);
+dcpKey = new SecretKeySpec(keyBytes, "AES");
+                                    System.out.println("🔑 Loaded existing DCP key for “" + recipient + "”.");
+                                    break;
+                                            }
+                                            }
+                                            } catch (IOException e) {
+        System.err.println("⚠️ Error reading DCP key file: " + e.getMessage());
+        }
+        }
+
+        // 2) If no key was found, generate + send it and save it
+        if (dcpKey == null) {
+        System.out.println("🔐 Generating new DCP AES key for “" + recipient + "”.");
+kg = KeyGenerator.getInstance("AES");
+                        kg.init(256);
+dcpKey = kg.generateKey();
+byte[] dcpKeyBytes = dcpKey.getEncoded();
+
+// wrap & send the key to server
+//TODO
+// mandar este package cifrado...?
+// sacar chave publica ao bacano
+// tinha de sacar chave AES somehow para conseguir cifrar tudo
+// ou só mandar chave AES depois
+// posso sacar a chave AES session key que usa com o servidor (pouco seguro)
+// posso mandar package para ter uma "session key" para trocar este pacotes iniciais
+AESRequest aesReq = new AESRequest(username, recipient, userPub, dcpKeyBytes);
+byte[] encReq = PacketUtils.encryptPacketAES(aesReq, sessionKey, iv);
+                        output.writeObject(encReq);
+                        output.flush();
+                        System.out.println("✅ Sent new DCP key to server.");
+
+// append to file
+                        try (FileWriter fw = new FileWriter(dcpFilename, true)) {
+String line = recipient + " : " + Base64.getEncoder().encodeToString(dcpKeyBytes);
+                            fw.write(line);
+                            fw.write(System.lineSeparator());
+        System.out.println("💾 Saved DCP key to “" + dcpFilename + "”.");
+                        } catch (IOException e) {
+        System.err.println("❌ Failed to save DCP key: " + e.getMessage());
+        }
+        }
+
+        // 3) Now send the actual direct message
+        System.out.print("Enter message: ");
+String message = scanner.nextLine();
+
+// you might want to encrypt 'message' with dcpKey here, if that's your protocol
+DirectMessagePacket req = new DirectMessagePacket(recipient, message, username);
+byte[] encMsg = PacketUtils.encryptPacketAES(req, sessionKey, iv);
+                    output.writeObject(encMsg);
+                    output.flush();
+
+                    continue;
+                            }
+*/

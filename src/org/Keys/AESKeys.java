@@ -45,27 +45,10 @@ public class AESKeys {
         return Base64.getEncoder().encodeToString(iv.getIV()) + ":" + Base64.getEncoder().encodeToString(encrypted);
     }
 
-    // Decrypt with AES key
-    /*public static byte[] decrypt(String encryptedData, SecretKey key) throws Exception {
-        String[] parts = encryptedData.split(":");
-        if (parts.length != 2) throw new IllegalArgumentException("Invalid encrypted data format");
 
-        byte[] iv = Base64.getDecoder().decode(parts[0]);
-        byte[] cipherText = Base64.getDecoder().decode(parts[1]);
-
-        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-        cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
-        return cipher.doFinal(cipherText);
-    }*/
     public static byte[] decrypt(String encryptedData, SecretKey key) throws Exception {
-        /*String[] parts = encryptedData.split(":");
-        if (parts.length != 2) throw new IllegalArgumentException("Invalid encrypted data format");
-
-        byte[] iv = Base64.getDecoder().decode(parts[0]);
-        byte[] cipherText = Base64.getDecoder().decode(parts[1]);*/
         byte[] cipherText = Base64.getDecoder().decode(encryptedData);
         Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-        /*cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));*/
         cipher.init(Cipher.DECRYPT_MODE, key);
         return cipher.doFinal(cipherText);
     }
