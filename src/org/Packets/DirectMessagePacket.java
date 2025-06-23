@@ -1,4 +1,3 @@
-// src/org/Packets/DirectMessagePacket.java
 package org.Packets;
 
 import java.io.Serializable;

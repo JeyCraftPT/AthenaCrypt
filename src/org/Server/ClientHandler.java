@@ -153,15 +153,33 @@ public class ClientHandler implements Runnable {
 
                 //TODO
                 // cena da cifra
+                // verificar isto...?
 
                 System.out.println(msg.getRecipient());
                 System.out.println(s.getRemoteSocketAddress());
                 a.output.writeObject(msg);
 
             }
-            case "AESAnswer_Cena" ->{
+            case "AESAnswer" ->{
                 //TODO
-                // fazer isto conforme linha 190 Client/Main.java
+                // confirmar isto
+
+                AESAnswer c = (AESAnswer)packet;
+
+                Socket s = Main.users.get(c.getRecipient());
+                ClientHandler a = Main.clientHandlers.get(s);
+                a.output.writeObject(c);
+            }
+            case "AESFinal" ->{
+                //TODO
+                // fazer isto tbm
+                AESFinal fin = (AESFinal)packet;
+
+                Socket s = Main.users.get(fin.getRecipient());
+                ClientHandler a = Main.clientHandlers.get(s);
+
+                a.output.writeObject(fin);
+
             }
             default -> {
                 InfoPacket unk = new InfoPacket("Unknown packet.");

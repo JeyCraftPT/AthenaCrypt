@@ -19,7 +19,6 @@ import java.security.*;
 import java.security.interfaces.RSAPrivateCrtKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPublicKeySpec;
-import java.util.Base64;
 import java.util.Scanner;
 
 public class Main {
@@ -155,6 +154,8 @@ public class Main {
             String finalUsername = username;
             String finalUsername1 = username;
             PublicKey finalUserPub = userPub;
+            PrivateKey finalUserPriv1 = userPriv;
+            String finalUsername2 = username;
             new Thread(() -> {
                 try {
                     while (true) {
@@ -187,7 +188,7 @@ public class Main {
                                 SecretKey miau = AESKeys.generateSessionKey();
 
                                 // Packet com sender/reciver/senderPub/senderAES
-                                AESAnswer_Cena kms = new AESAnswer_Cena(finalUsername1, who, finalUserPub, RSAKeys.encrypt(miau.getEncoded(),cena));
+                                AESAnswer kms = new AESAnswer(finalUsername1, who, finalUserPub, RSAKeys.encrypt(miau.getEncoded(),cena));
 
                                 output.writeObject(kms);
 
@@ -224,10 +225,41 @@ public class Main {
                             }
                             case "AESAnswer_Cena" ->{
                                 System.out.println("AESAnswer_Cena Packet");
+                                System.out.println("criar chave AES");
+
+                                SecretKey myAES = AESKeys.generateSessionKey();
+
+                                System.out.println("I am: " + ((AESAnswer)raw).getRecipient());
+                                System.out.println("This person sent the packet: " + ((AESAnswer)raw).getSender());
+                                String respond = ((AESAnswer)raw).getSender();
+
+                                System.out.println("Getting AES secret key");
+                                PublicKey senderPub = ((AESAnswer)raw).getPublicKey();
+                                byte[] senderEncAES = ((AESAnswer)raw).getSecretKey();
+                                byte[] senderDecAES = RSAKeys.decrypt(senderEncAES, finalUserPriv1);
+
+                                SecretKey senderAES = AESKeys.getKeyFromBytes(senderDecAES);
                                 //TODO
-                                // fazer packet que tenha (sender, reci, RSA(AES))
+                                // guardar chave para cifrar
+                                // chamar ao ficheiro username_SessionKey_crp.enc
+                                // cifrar ficheiro com pass do user
+
+                                byte[] myEncAES = RSAKeys.encrypt(myAES.getEncoded(), senderPub);
+                                AESFinal finaltrade = new AESFinal(finalUsername2, respond, myEncAES );
+
+                                output.writeObject(finaltrade);
+                                output.flush();
+
+                                //TODO
+                                // fazer packet que tenha (sender, reci, RSA(AES)) (done)
                                 // dar refactor aos nomes dos packets
-                                // acrescentar packets no ClientHandler.java
+                                // acrescentar packets no ClientHandler.java (WIP)
+                            }
+
+                            case "AESFinal" ->{
+                                System.out.println("AESFinal Packet");
+                                System.out.println("I am: " + ((AESFinal)raw).getRecipient());
+
                             }
 
                         }
@@ -261,18 +293,11 @@ public class Main {
                     // trocar isto por verificar a chave no ficheiro
                     // caso chave existar avisar e n fazer nada
 
-                    try {
-                        Thread.sleep(2000);  // 1000ms
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt(); // restore interrupt
-                    }
-
-
-
                 }
                 //TODO
                 // add /msg para poder estar a mandar msg a pessoas e poder sair com um comando específico
                 // o /select serve para a troca de chaves ig...?
+
                 ;
                 MessagePacket mp = new MessagePacket(msg);
                 byte[] encMsg = PacketUtils.encryptPacketAES(mp, sessionKey, iv);

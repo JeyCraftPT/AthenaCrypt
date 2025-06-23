@@ -16,6 +16,9 @@ public class PublicKeyPacket extends Packet implements Serializable {
         return publicKeyBytes;
     }
 
+    //TODO
+    // Adicionar isto a todos os packets
+
     /**
      * Reconstructs and returns the PublicKey object from the stored byte array.
      * @return PublicKey object

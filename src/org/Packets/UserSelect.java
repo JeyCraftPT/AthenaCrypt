@@ -4,7 +4,6 @@ import java.io.Serializable;
 
 public class UserSelect extends Packet  implements Serializable {
     private final String recipient;
-    //private final String username;
 
     public UserSelect(String recipient) {
         this.recipient = recipient;
@@ -17,5 +16,4 @@ public class UserSelect extends Packet  implements Serializable {
     public String getType(){
         return "UserSelect";
     }
-
 }

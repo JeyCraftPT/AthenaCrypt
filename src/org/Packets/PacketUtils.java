@@ -1,4 +1,3 @@
-// src/org/Packets/PacketUtils.java
 package org.Packets;
 
 import javax.crypto.Cipher;
@@ -8,7 +7,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.nio.ByteBuffer;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 
