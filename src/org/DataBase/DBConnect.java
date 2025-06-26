@@ -1,5 +1,7 @@
 package org.DataBase;
 
+import org.Packets.KeyBundle;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,9 +29,9 @@ public class DBConnect {
     }
 
 
-    public static String RegiPOST(String Username, String Pass, byte[] publicKey, int online) throws ClassNotFoundException {
+    public static String RegiPOST(String Username, String Pass, byte[] publicKey, byte[] preKey, byte[] signature, int online) throws ClassNotFoundException {
         String checkSQL = "SELECT 1 FROM client WHERE client_name = ?";
-        String insertSQL = "INSERT INTO client (client_name, client_pass, client_pKey, client_online) VALUES (?, ?, ?, ?)";
+        String insertSQL = "INSERT INTO client (client_name, client_pass, client_IPKey, client_SPKey, client_signature, client_online) VALUES (?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = DriverManager.getConnection(DB_URL, USER, PASSWORD)) {
 
@@ -50,8 +52,9 @@ public class DBConnect {
                 insertStmt.setString(1, Username);
                 insertStmt.setString(2, Pass);
                 insertStmt.setBytes(3, publicKey);
-                insertStmt.setInt(4, online);
-
+                insertStmt.setBytes(4, preKey);
+                insertStmt.setBytes(5, signature);
+                insertStmt.setInt(6, online);
 
                 int rowsAffected = insertStmt.executeUpdate();
                 return "Inserted rows: " + rowsAffected;
@@ -97,14 +100,16 @@ public class DBConnect {
                 if (rs.next()) {
                     String storedPass = rs.getString("client_pass");
                     if (storedPass.equals(Pass)) {
+                        //TODO
+                        // no need to get anything from DB
                         return new LoginPostResult("Login successfully", rs.getBytes("client_pKey"));  // return the BLOB as byte[]
 
 
                     }else{
-                        return new LoginPostResult("Wrong password", null);
+                        return new LoginPostResult("error: Wrong password", null);
                     }
                 }
-                return new LoginPostResult("No user found", null);
+                return new LoginPostResult("fail: No user found", null);
             }
         } catch (SQLException e) {
             System.err.println("Login failed: " + e.getMessage());
@@ -163,4 +168,95 @@ public class DBConnect {
     }
 
 
+    /**
+     * Inserts a one-time public key blob for the given username.
+     * @param username      the client_name in your client table
+     * @param oneTimeKey    the public key bytes to store
+     * @return              "OK" on success, or an error message
+     */
+    public static String postOneTimeKey(String username, byte[] oneTimeKey) {
+        String findSql   = "SELECT client_id FROM client WHERE client_name = ?";
+        String insertSql = "INSERT INTO oneTimeKeys (client_id, client_one_time_key) VALUES (?, ?)";
+
+        try (Connection conn = getConnection()) {
+            // 1) look up the client_id
+            Integer clientId = null;
+            try (PreparedStatement ps = conn.prepareStatement(findSql)) {
+                ps.setString(1, username);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        clientId = rs.getInt("client_id");
+                    } else {
+                        return "Error: no such user “" + username + "”";
+                    }
+                }
+            }
+
+            // 2) insert the one-time key
+            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+                ps.setInt   (1, clientId);
+                ps.setBytes (2, oneTimeKey);
+                int rows = ps.executeUpdate();
+                if (rows == 1) {
+                    return "OK";
+                } else {
+                    return "Error: inserted " + rows + " rows";
+                }
+            }
+
+        } catch (SQLException e) {
+            return "DB error: " + e.getMessage();
+        }
+    }
+
+
+    /**
+     * Fetches the given user’s identity key, signing key, and one one-time key.
+     * @param username  the client_name
+     * @return          a UserKeyBundle if the user (and at least one one-time key) exist,
+     *                  or null if not found.
+     * @throws SQLException on DB errors
+     */
+    public static KeyBundle getUserKeyBundle(String username) throws SQLException {
+        String findClient =
+                "SELECT client_id, client_IPKey, client_SPKey " +
+                        "FROM client WHERE client_name = ?";
+        //TODO
+        // Em vez de estar sequencial mudar para random tendo tempo
+        String findOneTime =
+                "SELECT client_one_time_key " +
+                        "FROM oneTimeKeys " +
+                        "WHERE client_id = ? " +
+                        "ORDER BY key_ID ASC " +
+                        "LIMIT 1";
+
+        try (Connection conn = getConnection();
+             PreparedStatement pstClient = conn.prepareStatement(findClient)) {
+
+            pstClient.setString(1, username);
+            try (ResultSet rsClient = pstClient.executeQuery()) {
+                if (!rsClient.next()) {
+                    // no such user
+                    return null;
+                }
+                int clientId   = rsClient.getInt("client_id");
+                byte[] ipKey   = rsClient.getBytes("client_IPKey");
+                byte[] spKey   = rsClient.getBytes("client_SPKey");
+                byte[] signature = rsClient.getBytes("signature");
+
+                // now get one one-time key
+                try (PreparedStatement pstOTK = conn.prepareStatement(findOneTime)) {
+                    pstOTK.setInt(1, clientId);
+                    try (ResultSet rsOTK = pstOTK.executeQuery()) {
+                        if (!rsOTK.next()) {
+                            // user has no one-time keys available
+                            return null;
+                        }
+                        byte[] otk = rsOTK.getBytes("client_one_time_key");
+                        return new KeyBundle(ipKey, spKey, signature, otk);
+                    }
+                }
+            }
+        }
+    }
 }

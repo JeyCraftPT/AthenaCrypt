@@ -8,6 +8,7 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.sql.SQLException;
 import java.util.List;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -91,6 +92,8 @@ public class ClientHandler implements Runnable {
                         reg.getUsername(),
                         reg.getPassword(),
                         reg.getPublicKeyBytes(),  // make sure RegisterPacket carries this
+                        reg.getSignedPreKey(),
+                        reg.getSignature(),
                         0                         // whatever your "role" or flag parameter is
                 );
 
@@ -128,6 +131,19 @@ public class ClientHandler implements Runnable {
 
                 });
             }
+            case "oneTimeKeysPacket" -> {
+                oneTimeKeysPacket pkt = (oneTimeKeysPacket) packet;
+                String user = pkt.getUser();
+                byte[] pub  = pkt.getPublicKey();
+                // save into the oneTimeKeys table
+                String result = DBConnect.postOneTimeKey(user, pub);
+                if (!"OK".equals(result)) {
+                    System.err.println("❌ Failed to persist one‐time key for “" + user + "”: " + result);
+                } else {
+                    System.out.println("✅ Stored one‐time key for “" + user + "” in DB.");
+                }
+            }
+
             case "Message" -> {
                 MessagePacket msg = (MessagePacket)packet;
                 eventListener.onClientAction("Message", username + ": " + msg.getMessage());
@@ -180,6 +196,41 @@ public class ClientHandler implements Runnable {
 
                 a.output.writeObject(fin);
 
+            }
+            case "BundleRequest" -> {
+                BundleRequestPacket bp = (BundleRequestPacket)packet;
+                String who = bp.getReceiver();
+                try {
+                    // fetch from DB (returns your org.Packets.KeyBundle or null)
+                    KeyBundle bundle = DBConnect.getUserKeyBundle(who);
+                    if (bundle == null) {
+                        // no such user or no one‐time keys left
+                        InfoPacket err = new InfoPacket(
+                                "error: no key bundle available for “" + who + "”"
+                        );
+                        output.writeObject(err);
+                    } else {
+                        // send the bundle packet
+                        output.writeObject(bundle);
+
+                        //TODO
+                        // tbm remover do ficheiro
+
+                        // optionally, remove that one-time key row so it's single-use:
+                        // DBConnect.deleteOneTimeKey(who, bundle.getOneTimeKey());
+                    }
+                    output.flush();
+                } catch (SQLException | IOException e) {
+                    e.printStackTrace();
+                    try {
+                        output.writeObject(new InfoPacket(
+                                "error: failed to fetch key bundle for “" + who + "”"
+                        ));
+                        output.flush();
+                    } catch (IOException ex) {
+                        ex.printStackTrace();
+                    }
+                }
             }
             default -> {
                 InfoPacket unk = new InfoPacket("Unknown packet.");

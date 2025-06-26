@@ -3,23 +3,42 @@ package org.Client;
 import org.Keys.AESKeys;
 import org.Keys.RSAKeys;
 import org.Packets.*;
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-import javax.crypto.Cipher;
-import javax.crypto.SecretKeyFactory;
+
+import javax.crypto.*;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.*;
 import java.security.interfaces.RSAPrivateCrtKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPublicKeySpec;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Scanner;
+
+
+import java.io.*;
+import java.security.*;
+import java.security.spec.*;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import javax.crypto.KeyAgreement;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKeyFactory;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+//TODO
+// remove typo "reciver" to "receiver"
 
 public class Main {
     private static final String SERVER_ADDRESS = "localhost";
@@ -34,9 +53,13 @@ public class Main {
         ) {
             System.out.println("Connected to server.");
 
-            String username = null;
-            PublicKey userPub = null;
-            PrivateKey userPriv = null;
+            final Map<String, DoubleRatchetState> sessionStore = new ConcurrentHashMap<>();
+            String username = null; //username
+            PublicKey userPub = null; //IdentityKey
+            PrivateKey userPriv = null; //IdentityPrivKey
+            PublicKey userSPub = null; //SignedPreKey
+            PrivateKey userPrivSPub = null; //SignedPreKey Priv
+            String userPass = null;
 
             // 1) Receive RSA server public key
             Object o = input.readObject();
@@ -74,16 +97,25 @@ public class Main {
 
             // REGISTER
             if (action.equals("register")) {
+
                 System.out.print("New username: ");  String u = scanner.nextLine();
                 System.out.print("New password: ");  String p = scanner.nextLine();
 
-                // generate identity RSA keypair
-                KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-                kpg.initialize(2048);
-                KeyPair userKP = kpg.generateKeyPair();
+                KeyPair userIKP = RSAKeys.generateKeyPair(); //IdentityKey
+                KeyPair userSKP = RSAKeys.generateKeyPair(); //PreKey
+                byte[] userSKPbytes = userSKP.getPublic().getEncoded();
+
+                // 1) Sign the signing‐pub with the identity‐priv
+                Signature signer = Signature.getInstance("SHA256withRSA");
+                signer.initSign(userIKP.getPrivate());
+                signer.update(userSKPbytes);
+                byte[] signature = signer.sign(); //Signature of PreKey
+
+                //TODO
+                // por pass em hash tf
 
                 // send RegisterPacket under AES, including public key bytes
-                RegisterPacket reg = new RegisterPacket(u, p, userKP.getPublic().getEncoded());
+                RegisterPacket reg = new RegisterPacket(u, p, userIKP.getPublic().getEncoded(), userSKP.getPublic().getEncoded(), signature);
                 byte[] enc = PacketUtils.encryptPacketAES(reg, sessionKey, iv);
                 output.writeObject(enc);
                 output.flush();
@@ -97,16 +129,42 @@ public class Main {
                 String msg = info.getMessage().toLowerCase();
                 if (!msg.contains("error") && !msg.contains("fail")) {
                     String filename = u + "_private_key.enc";
-                    savePrivateKeyEncrypted(userKP.getPrivate(), p, filename);
+                    savePrivateKeyEncrypted(userIKP.getPrivate(), p, filename);
                     System.out.println("🔐 Private key saved to: " + filename);
+                    //TODO
+                    // por isto decente <3
+                    // guardar as privKeys num ficheiro cifrado com pass
+
+                    int N = 100;  // or 10, or whatever you like
+                    List<KeyPair> oneTimeKPs = new ArrayList<>(N);
+                    for (int i = 0; i < N; i++) {
+                        oneTimeKPs.add(RSAKeys.generateKeyPair());
+                    }
+
+                    // send only the PUBLIC halves to the server, just like before
+                    for (KeyPair otp : oneTimeKPs) {
+                        oneTimeKeysPacket pkt =
+                                new oneTimeKeysPacket(u, otp.getPublic().getEncoded());
+                        output.writeObject(pkt);
+                        output.flush();
+                    }
+
+                    // now persist all the PRIVATE halves in one encrypted file
+                    String otFilename = u + "_onetime_keys.enc";
+                    saveOneTimeKeysEncrypted(oneTimeKPs, p, otFilename);
+                    System.out.println("🔐 Saved "+N+" one-time keys to: " + otFilename);
+
+
                 } else {
                     System.err.println("Registration failed; private key not saved.");
                     return;
                 }
 
-                userPub = userKP.getPublic();
+                userPub = userIKP.getPublic();
                 username = u;
-                userPriv = userKP.getPrivate();
+                userPriv = userIKP.getPrivate();
+                userSPub = userSKP.getPublic();
+                userPrivSPub = userSKP.getPrivate();
             }
             // LOGIN
             else {
@@ -115,8 +173,21 @@ public class Main {
 
                 // load private key and derive public (not resent)
                 PrivateKey userPrivF = loadPrivateKeyFromFile(p, u + "_private_key.enc");
-                PublicKey userPubF = derivePublicKey(userPriv);
-                System.out.println("🔑 Loaded key from " + u + "_private_key.enc");
+                PublicKey userPubF = derivePublicKey(userPrivF);
+                System.out.println("🔑 Loaded private RSA key from " + u + "_private_key.enc");
+
+                // === load all of your one-time private keys ===
+                String otFilename = u + "_onetime_keys.enc";
+                List<PrivateKey> oneTimePrivs = loadOneTimeKeysEncrypted(p, otFilename);
+                System.out.println("🔑 Loaded " + oneTimePrivs.size()
+                        + " one-time private keys from: " + otFilename);
+
+                // (Optional) if you need full KeyPair objects:
+                /*List<KeyPair> oneTimeKPs = new ArrayList<>(oneTimePrivs.size());
+                for (PrivateKey priv : oneTimePrivs) {
+                    PublicKey pub = derivePublicKey(priv);
+                    oneTimeKPs.add(new KeyPair(pub, priv));
+                }*/
 
                 // send LoginPacket under AES
                 LoginPacket login = new LoginPacket(u, p);
@@ -147,6 +218,7 @@ public class Main {
                 userPub = userPubF;
                 username = u;
                 userPriv = userPrivF;
+                userPass = p;
             }
 
             // 4) start listener thread (AES)
@@ -156,6 +228,8 @@ public class Main {
             PublicKey finalUserPub = userPub;
             PrivateKey finalUserPriv1 = userPriv;
             String finalUsername2 = username;
+            String finalUsername3 = username;
+            String finalUserPass = userPass;
             new Thread(() -> {
                 try {
                     while (true) {
@@ -192,10 +266,6 @@ public class Main {
 
                                 output.writeObject(kms);
 
-                                //TODO
-                                // Adicionar metodo para adicionar a chave AES num ficheiro chamado username_SessionKey_denc.enc
-                                // chaves neste ficheiro serão usadas para decifrar mensages
-                                // cifrar ficheiro com pass do user
 
                                 /*// who this key is for:
                                 String reci = ((AESRequest) raw).getSender();
@@ -239,10 +309,7 @@ public class Main {
                                 byte[] senderDecAES = RSAKeys.decrypt(senderEncAES, finalUserPriv1);
 
                                 SecretKey senderAES = AESKeys.getKeyFromBytes(senderDecAES);
-                                //TODO
-                                // guardar chave para cifrar
-                                // chamar ao ficheiro username_SessionKey_crp.enc
-                                // cifrar ficheiro com pass do user
+
 
                                 byte[] myEncAES = RSAKeys.encrypt(myAES.getEncoded(), senderPub);
                                 AESFinal finaltrade = new AESFinal(finalUsername2, respond, myEncAES );
@@ -250,10 +317,7 @@ public class Main {
                                 output.writeObject(finaltrade);
                                 output.flush();
 
-                                //TODO
-                                // fazer packet que tenha (sender, reci, RSA(AES)) (done)
-                                // dar refactor aos nomes dos packets
-                                // acrescentar packets no ClientHandler.java (WIP)
+
                             }
 
                             case "AESFinal" ->{
@@ -261,11 +325,99 @@ public class Main {
                                 System.out.println("I am: " + ((AESFinal)raw).getRecipient());
 
                             }
+                            case "KeyBundle" -> {
+                                System.out.println("KeyBundle Packet");
+                                KeyBundle kr = (KeyBundle) raw;
+
+                                //
+                                // 1) VERIFY THE SIGNED PREKEY
+                                //
+                                KeyFactory rsaKf = KeyFactory.getInstance("RSA");
+                                PublicKey theirIdPub = rsaKf.generatePublic(
+                                        new X509EncodedKeySpec(kr.getIdentityPub())
+                                );
+
+                                Signature verifier = Signature.getInstance("SHA256withRSA");
+                                verifier.initVerify(theirIdPub);
+                                verifier.update(kr.getSigningPub());
+                                if (!verifier.verify(kr.getSignature())) {
+                                    System.err.println("❌ SignedPreKey signature invalid—aborting handshake.");
+                                    break;
+                                }
+                                System.out.println("✅ SignedPreKey signature valid.");
+
+                                //
+                                // 2) CONSUME ONE-TIME KEY
+                                //
+                                String otFilename = finalUsername3 + "_onetime_keys.enc";
+                                List<PrivateKey> privs = loadOneTimeKeysEncrypted(finalUserPass, otFilename);
+                                if (privs.isEmpty()) {
+                                    System.err.println("❌ No one-time private keys left!");
+                                    break;
+                                }
+
+                                PrivateKey firstPriv = privs.get(0);
+                                PublicKey derived = derivePublicKey(firstPriv);
+                                if (!Arrays.equals(derived.getEncoded(), kr.getOneTimeKey())) {
+                                    System.err.println("❌ One-time key mismatch—aborting.");
+                                    break;
+                                }
+                                System.out.println("✅ One-time key matches; removing.");
+
+                                privs.remove(0);
+                                List<KeyPair> remaining = new ArrayList<>(privs.size());
+                                for (PrivateKey p : privs) {
+                                    remaining.add(new KeyPair(derivePublicKey(p), p));
+                                }
+                                saveOneTimeKeysEncrypted(remaining, finalUserPass, otFilename);
+                                System.out.println("🔐 Persisted " + remaining.size() + " one-time keys remaining.");
+
+                                //
+                                // 3) X3DH → FOUR-WAY DH, HKDF, ROOT + CHAIN KEYS, INIT RATCHET
+                                //
+                                PublicKey theirX25519Id   = bytesToX25519Pub(kr.getIdentityPub());
+                                PublicKey theirX25519SPub = bytesToX25519Pub(kr.getSigningPub());
+                                PublicKey theirX25519OT   = bytesToX25519Pub(kr.getOneTimeKey());
+
+                                // our fresh ephemeral
+                                KeyPairGenerator kpg = KeyPairGenerator.getInstance("X25519");
+                                KeyPair ephKP = kpg.generateKeyPair();
+                                PrivateKey ourEpriv = ephKP.getPrivate();
+
+                                byte[] dh1 = x25519(finalUserPriv,    theirX25519SPub); // IK_A × SPK_B
+                                byte[] dh2 = x25519(ourEpriv,         theirX25519Id);   // EK_A × IK_B
+                                byte[] dh3 = x25519(ourEpriv,         theirX25519SPub); // EK_A × SPK_B
+                                byte[] dh4 = x25519(ourEpriv,         theirX25519OT);   // EK_A × OPK_B
+
+                                // concat all DH outputs
+                                ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
+                                buf.put(dh1).put(dh2).put(dh3).put(dh4);
+                                byte[] masterSecret = buf.array();
+
+                                // HKDF extract+expand → 32-byte root key
+                                byte[] rootKey = hkdf(new byte[32], masterSecret, "X3DH".getBytes(UTF_8), 32);
+
+                                // split into send/recv chain keys
+                                byte[] sendCK = hkdfExpand(rootKey, "send".getBytes(UTF_8), 32);
+                                byte[] recvCK = hkdfExpand(rootKey, "recv".getBytes(UTF_8), 32);
+
+                                // initialize your ratchet (replace with your actual class)
+                                DoubleRatchetState dr = new DoubleRatchetState(
+                                        rootKey,
+                                        ourEpriv,
+                                        theirX25519SPub,  // using SPub as the initial ratchet pub
+                                        sendCK,
+                                        recvCK
+                                );
+                                String peerId = Base64.getEncoder().encodeToString( kr.getIdentityPub() );
+                                sessionStore.put(peerId, dr);
+                                System.out.println("✅ X3DH + Double Ratchet initialized.");
+                            }
+
 
                         }
                     }
-                    //TODO
-                    // da exception porque o package n vem cifrado
+
                 } catch (Exception e) {
                     e.printStackTrace();
                     System.out.println("Listener stopped.");
@@ -287,12 +439,15 @@ public class Main {
                     System.out.print("Enter recipient: ");
                     String recipient = scanner.nextLine().trim();
 
-                    AESRequest raw = new AESRequest(username, recipient, userPub);
+                    //AESRequest raw = new AESRequest(username, recipient, userPub);
+
+                    BundleRequestPacket raw = new BundleRequestPacket(username, recipient);
+
+                    output.writeObject(raw);
+                    output.flush();
 
                     //TODO
-                    // trocar isto por verificar a chave no ficheiro
-                    // caso chave existar avisar e n fazer nada
-
+                    // fazer com que isto faça o DH para a troca de chaves com as chaves da outra pessoa
                 }
                 //TODO
                 // add /msg para poder estar a mandar msg a pessoas e poder sair com um comando específico
@@ -310,6 +465,9 @@ public class Main {
             e.printStackTrace();
         }
     }
+
+    //TODO
+    // send this to other files
 
     /**
      * Saves a PKCS#8 encoding of the private key, encrypted with AES/CBC using PBKDF2.
@@ -363,87 +521,228 @@ public class Main {
         return KeyFactory.getInstance("RSA").generatePrivate(keySpec);
     }
 
+
+
     /**
-     * Derives the RSA public key from a PKCS#8 private key.
+     * Gather the PKCS#8 bytes of each private key,
+     * prefix each with a 4-byte length, encrypt the whole
+     * with AES/CBC/PKCS5Padding (PBKDF2(secret)), and write:
+     *   [salt:16][iv:16][cipherText...]
      */
+    private static void saveOneTimeKeysEncrypted(List<KeyPair> keyPairs,
+                                                 String password,
+                                                 String filename) throws Exception {
+        // 1) build a single unencrypted blob
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream dos = new DataOutputStream(baos);
+        for (KeyPair kp : keyPairs) {
+            byte[] pkcs8 = kp.getPrivate().getEncoded();
+            dos.writeInt(pkcs8.length);
+            dos.write(pkcs8);
+        }
+        dos.flush();
+        byte[] plain = baos.toByteArray();
+
+        // 2) salt + PBKDF2 → AES key
+        byte[] salt = new byte[16];
+        new SecureRandom().nextBytes(salt);
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65536, 256);
+        SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = skf.generateSecret(spec).getEncoded();
+        SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 3) encrypt
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey);
+        byte[] iv = cipher.getParameters()
+                .getParameterSpec(IvParameterSpec.class)
+                .getIV();
+        byte[] ciphertext = cipher.doFinal(plain);
+
+        // 4) write out salt‖iv‖cipher
+        try (FileOutputStream fos = new FileOutputStream(filename)) {
+            fos.write(salt);
+            fos.write(iv);
+            fos.write(ciphertext);
+        }
+    }
+
+    /**
+     * Load and decrypt the one-time-keys file, returning the List<PrivateKey>.
+     * You can then reconstruct KeyPair if you also store modulus/exponent or derive pub via CRT.
+     */
+    private static List<PrivateKey> loadOneTimeKeysEncrypted(String password,
+                                                             String filename) throws Exception {
+        byte[] file = Files.readAllBytes(Paths.get(filename));
+        ByteBuffer buf = ByteBuffer.wrap(file);
+
+        byte[] salt = new byte[16]; buf.get(salt);
+        byte[] iv   = new byte[16]; buf.get(iv);
+        byte[] cipherText = new byte[buf.remaining()];
+        buf.get(cipherText);
+
+        // derive
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65536, 256);
+        SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = skf.generateSecret(spec).getEncoded();
+        SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // decrypt
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
+        byte[] plain = cipher.doFinal(cipherText);
+
+        // split back into individual priv-keys
+        List<PrivateKey> privs = new ArrayList<>();
+        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(plain));
+        while (dis.available() > 0) {
+            int len = dis.readInt();
+            byte[] pkcs8 = new byte[len];
+            dis.readFully(pkcs8);
+            PKCS8EncodedKeySpec specPK = new PKCS8EncodedKeySpec(pkcs8);
+            PrivateKey priv = KeyFactory.getInstance("RSA")
+                    .generatePrivate(specPK);
+            privs.add(priv);
+        }
+        return privs;
+    }
+
+    //------
+
+    // X25519 DH
+    private static byte[] x25519(PrivateKey sk, PublicKey pk) throws GeneralSecurityException {
+        KeyAgreement ka = KeyAgreement.getInstance("X25519");
+        ka.init(sk);
+        ka.doPhase(pk, true);
+        return ka.generateSecret();
+    }
+
+    // decode raw bytes into an X25519 public key
+    private static PublicKey bytesToX25519Pub(byte[] raw) throws GeneralSecurityException {
+        return KeyFactory.getInstance("X25519")
+                .generatePublic(new X509EncodedKeySpec(raw));
+    }
+
+    // derive RSA public from private (you already have this)
     private static PublicKey derivePublicKey(PrivateKey priv) throws Exception {
         RSAPrivateCrtKey crt = (RSAPrivateCrtKey) priv;
         RSAPublicKeySpec spec = new RSAPublicKeySpec(crt.getModulus(), crt.getPublicExponent());
         return KeyFactory.getInstance("RSA").generatePublic(spec);
     }
+
+    // HKDF-Extract: PRK = HMAC-SHA256(salt, ikm)
+    private static byte[] hkdfExtract(byte[] salt, byte[] ikm) throws GeneralSecurityException {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        SecretKeySpec keySpec = new SecretKeySpec(
+                salt != null ? salt : new byte[32], "HmacSHA256"
+        );
+        mac.init(keySpec);
+        return mac.doFinal(ikm);
+    }
+
+    // HKDF-Expand: OKM of desired length
+    private static byte[] hkdfExpand(byte[] prk, byte[] info, int length) throws GeneralSecurityException {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(prk, "HmacSHA256"));
+        byte[] okm = new byte[length];
+        byte[] t = new byte[0];
+        int copied = 0;
+        byte counter = 1;
+        while (copied < length) {
+            mac.reset();
+            mac.update(t);
+            if (info != null) mac.update(info);
+            mac.update(counter++);
+            t = mac.doFinal();
+            int toCopy = Math.min(t.length, length - copied);
+            System.arraycopy(t, 0, okm, copied, toCopy);
+            copied += toCopy;
+        }
+        return okm;
+    }
+
+    // Convenience: HKDF Extract+Expand in one call
+    private static byte[] hkdf(byte[] salt, byte[] ikm, byte[] info, int length)
+            throws GeneralSecurityException {
+        byte[] prk = hkdfExtract(salt, ikm);
+        return hkdfExpand(prk, info, length);
+    }
+
+
+    //---------
+
+    public static void saveRatchetStateEncrypted(
+            DoubleRatchetState state,
+            String password,
+            String filename
+    ) throws Exception {
+        // 1) serialize to bytes
+        ByteArrayOutputStream   baos = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+            oos.writeObject(state);
+        }
+        byte[] plain = baos.toByteArray();
+
+        // 2) derive AES key via PBKDF2
+        byte[] salt = new byte[16];
+        new SecureRandom().nextBytes(salt);
+        PBEKeySpec spec = new PBEKeySpec(
+                password.toCharArray(), salt, 65536, 256
+        );
+        SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = f.generateSecret(spec).getEncoded();
+        SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 3) encrypt with AES/CBC/PKCS5Padding
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey);
+        byte[] iv = cipher.getParameters()
+                .getParameterSpec(IvParameterSpec.class)
+                .getIV();
+        byte[] ciphertext = cipher.doFinal(plain);
+
+        // 4) write salt‖iv‖ciphertext
+        try (FileOutputStream fos = new FileOutputStream(filename)) {
+            fos.write(salt);
+            fos.write(iv);
+            fos.write(ciphertext);
+        }
+    }
+
+    /**
+     * Load, decrypt and deserialize DoubleRatchetState from file encrypted
+     * with PBKDF2/AES/CBC under the given password.
+     */
+    public static DoubleRatchetState loadRatchetStateEncrypted(
+            String password,
+            String filename
+    ) throws Exception {
+        byte[] data = Files.readAllBytes(Paths.get(filename));
+        ByteBuffer buf = ByteBuffer.wrap(data);
+
+        byte[] salt = new byte[16]; buf.get(salt);
+        byte[] iv   = new byte[16]; buf.get(iv);
+        byte[] cipherText = new byte[buf.remaining()];
+        buf.get(cipherText);
+
+        // 1) derive AES key
+        PBEKeySpec spec = new PBEKeySpec(
+                password.toCharArray(), salt, 65536, 256
+        );
+        SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = f.generateSecret(spec).getEncoded();
+        SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 2) decrypt
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
+        byte[] plain = cipher.doFinal(cipherText);
+
+        // 3) deserialize
+        try (ObjectInputStream ois =
+                     new ObjectInputStream(new ByteArrayInputStream(plain))) {
+            return (DoubleRatchetState) ois.readObject();
+        }
+    }
 }
 
-/*
-else if (msg.equalsIgnoreCase("select")) {
-        System.out.print("Enter recipient: ");
-String recipient = scanner.nextLine().trim();
-
-// where we persist DCP keys
-String dcpFilename = username + "_SessionKeyDCP.enc";
-SecretKey dcpKey = null;
-
-// 1) Try to load an existing key from file
-File keyFile = new File(dcpFilename);
-                    if (keyFile.exists()) {
-        try (BufferedReader br = new BufferedReader(new FileReader(keyFile))) {
-String line;
-                            while ((line = br.readLine()) != null) {
-String[] parts = line.split(" : ");
-                                if (parts.length == 2 && parts[0].equals(recipient)) {
-byte[] keyBytes = Base64.getDecoder().decode(parts[1]);
-dcpKey = new SecretKeySpec(keyBytes, "AES");
-                                    System.out.println("🔑 Loaded existing DCP key for “" + recipient + "”.");
-                                    break;
-                                            }
-                                            }
-                                            } catch (IOException e) {
-        System.err.println("⚠️ Error reading DCP key file: " + e.getMessage());
-        }
-        }
-
-        // 2) If no key was found, generate + send it and save it
-        if (dcpKey == null) {
-        System.out.println("🔐 Generating new DCP AES key for “" + recipient + "”.");
-kg = KeyGenerator.getInstance("AES");
-                        kg.init(256);
-dcpKey = kg.generateKey();
-byte[] dcpKeyBytes = dcpKey.getEncoded();
-
-// wrap & send the key to server
-//TODO
-// mandar este package cifrado...?
-// sacar chave publica ao bacano
-// tinha de sacar chave AES somehow para conseguir cifrar tudo
-// ou só mandar chave AES depois
-// posso sacar a chave AES session key que usa com o servidor (pouco seguro)
-// posso mandar package para ter uma "session key" para trocar este pacotes iniciais
-AESRequest aesReq = new AESRequest(username, recipient, userPub, dcpKeyBytes);
-byte[] encReq = PacketUtils.encryptPacketAES(aesReq, sessionKey, iv);
-                        output.writeObject(encReq);
-                        output.flush();
-                        System.out.println("✅ Sent new DCP key to server.");
-
-// append to file
-                        try (FileWriter fw = new FileWriter(dcpFilename, true)) {
-String line = recipient + " : " + Base64.getEncoder().encodeToString(dcpKeyBytes);
-                            fw.write(line);
-                            fw.write(System.lineSeparator());
-        System.out.println("💾 Saved DCP key to “" + dcpFilename + "”.");
-                        } catch (IOException e) {
-        System.err.println("❌ Failed to save DCP key: " + e.getMessage());
-        }
-        }
-
-        // 3) Now send the actual direct message
-        System.out.print("Enter message: ");
-String message = scanner.nextLine();
-
-// you might want to encrypt 'message' with dcpKey here, if that's your protocol
-DirectMessagePacket req = new DirectMessagePacket(recipient, message, username);
-byte[] encMsg = PacketUtils.encryptPacketAES(req, sessionKey, iv);
-                    output.writeObject(encMsg);
-                    output.flush();
-
-                    continue;
-                            }
-*/
