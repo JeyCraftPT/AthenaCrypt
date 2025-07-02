@@ -56,10 +56,18 @@ public class ClientHandler implements Runnable {
             this.sessionKey= new SecretKeySpec(keyBytes, "AES");
             System.out.println("✅ Session key established.");
 
+            List<DirectMessagePacket> queued = DBConnect.getOfflineMessages(username);
+            for (DirectMessagePacket p : queued) {
+                byte[] wrapped = PacketUtils.encryptPacketAES(p, sessionKey, iv);
+                output.writeObject(wrapped);
+            }
+            DBConnect.deleteOfflineMessages(username);
+
             // 3) Now all packets via AES
             while (true) {
                 byte[] raw = (byte[])input.readObject();
                 Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
+
                 handlePacket(pkt, output);
             }
 
@@ -159,8 +167,15 @@ public class ClientHandler implements Runnable {
                 Socket destSock = Main.users.get(msg.getRecipient());
                 ClientHandler destHandler = Main.clientHandlers.get(destSock);
                 if (destHandler == null) {
-                    System.err.println("❌ No handler for user “" + msg.getRecipient() + "”");
-                    break;
+                    // store for offline delivery
+                     DBConnect.storeOfflineMessage(
+                         msg.getSender(),
+                         msg.getRecipient(),
+                         msg.getHeaderPub(),
+                         msg.getIv(),
+                         msg.getCiphertext()
+                     );
+                break;
                 }
                 // AES-encrypt for that user’s session:
                 byte[] wrapped = PacketUtils.encryptPacketAES(
@@ -171,6 +186,36 @@ public class ClientHandler implements Runnable {
                 destHandler.output.writeObject(wrapped);
                 destHandler.output.flush();
             }
+
+            case "handshake" -> {
+                HandShakePacket handshake = (HandShakePacket) packet;
+                String initiator = handshake.getUsername();
+                String receiver  = handshake.getPerson();
+
+                // 1) Use the new helper to get a bundle whose oneTimeKeyID is local slot
+                KeyBundle sendBundle = DBConnect.getUserKeyBundleLocal(receiver);
+                if (sendBundle == null) {
+                    System.err.println("❌ No KeyBundle for " + receiver);
+                    break;
+                }
+
+                // 2) Touch the DB with the real key_ID so FKs stay happy
+                int realKeyId = DBConnect.getUserKeyBundle(receiver).getOneTimeKeyID();
+                String result = DBConnect.Touch(initiator, receiver, realKeyId);
+
+                if ("Added".equals(result)) {
+                    // new handshake → send bundle and consume that real key
+                    output.writeObject(sendBundle);
+                    DBConnect.deleteOneTimeKey(receiver, sendBundle.getOneTimeKey());
+                } else {
+                    // already exists → resend the same bundle (with local index)
+                    System.out.println("🔁 Handshake already exists for "
+                            + initiator + "↔" + receiver);
+                    output.writeObject(sendBundle);
+                }
+            }
+
+
 
 
 

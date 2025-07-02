@@ -1,8 +1,6 @@
 package org.Packets;
 
-import java.io.Serializable;
-
-public class KeyBundle extends Packet implements Serializable {
+public class HandShake2Packet extends Packet {
     // RSA identity‐key (for verifying SPK signatures)
     private final byte[] rsaIdentityPub;
     // X25519 identity‐key (for X3DH IK_A)
@@ -15,14 +13,16 @@ public class KeyBundle extends Packet implements Serializable {
     private final byte[] oneTimeKey;
     // One-time x25519 key ID
     private final int oneTimeKeyID;
+    final int key;
 
-    public KeyBundle(byte[] rsaIdentityPub,
-                     byte[] x25519IdentityPub,
-                     byte[] x25519SigningPub,
-                     byte[] signature,
-                     byte[] oneTimeKey,
-                     int oneTimeKeyID)
-    {
+    public HandShake2Packet(int key,
+                            byte[] rsaIdentityPub,
+                            byte[] x25519IdentityPub,
+                            byte[] x25519SigningPub,
+                            byte[] signature,
+                            byte[] oneTimeKey,
+                            int oneTimeKeyID) {
+        this.key = key;
         this.rsaIdentityPub    = rsaIdentityPub;
         this.x25519IdentityPub = x25519IdentityPub;
         this.x25519SigningPub  = x25519SigningPub;
@@ -31,6 +31,9 @@ public class KeyBundle extends Packet implements Serializable {
         this.oneTimeKeyID      = oneTimeKeyID;
     }
 
+    public int getKey() {
+        return key;
+    }
     public byte[] getRsaIdentityPub()    { return rsaIdentityPub;    }
     public byte[] getX25519IdentityPub() { return x25519IdentityPub; }
     public byte[] getX25519SigningPub()  { return x25519SigningPub;  }
@@ -40,6 +43,6 @@ public class KeyBundle extends Packet implements Serializable {
 
     @Override
     public String getType() {
-        return "KeyBundle";
+        return "HandShake2Packet";
     }
 }

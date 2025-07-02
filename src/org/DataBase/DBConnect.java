@@ -1,5 +1,6 @@
 package org.DataBase;
 
+import org.Packets.DirectMessagePacket;
 import org.Packets.KeyBundle;
 
 import javax.crypto.SecretKeyFactory;
@@ -52,6 +53,7 @@ public class DBConnect {
         String insertSQL = "INSERT INTO client " +
                 "(client_name, client_pass, client_IPKey, client_x25519IdentityKey, client_SPKey, client_signature, client_online) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?)";
+
         try (Connection conn = getConnection()) {
             // 1) check username
             try (PreparedStatement checkStmt = conn.prepareStatement(checkSQL)) {
@@ -275,14 +277,18 @@ public class DBConnect {
      * @throws SQLException on DB errors
      */
     public static KeyBundle getUserKeyBundle(String username) throws SQLException {
-        // now include the X25519 identity key column
+        // include the X25519 identity key column
         String findClient =
-                "SELECT client_id, client_IPKey, client_x25519IdentityKey, client_SPKey, client_signature " +
-                        "  FROM client WHERE client_name = ?";
+                "SELECT client_id, client_IPKey, client_x25519IdentityKey, "
+                        + "       client_SPKey, client_signature "
+                        + "  FROM client WHERE client_name = ?";
+        // now select both the key blob and its ID
         String findOneTime =
-                "SELECT client_one_time_key " +
-                        "  FROM oneTimeKeys WHERE client_id = ? " +
-                        "  ORDER BY key_ID ASC LIMIT 1";
+                "SELECT key_ID, client_one_time_key "
+                        + "  FROM oneTimeKeys "
+                        + " WHERE client_id = ? "
+                        + " ORDER BY key_ID ASC "
+                        + " LIMIT 1";
 
         try (Connection conn = getConnection();
              PreparedStatement pstClient = conn.prepareStatement(findClient)) {
@@ -297,26 +303,58 @@ public class DBConnect {
                 byte[] spkPub       = rsClient.getBytes ("client_SPKey");
                 byte[] signature    = rsClient.getBytes ("client_signature");
 
-                // pull one one-time key as before
+                // pull one one-time key *and* its key_ID
                 try (PreparedStatement pstOTK = conn.prepareStatement(findOneTime)) {
                     pstOTK.setInt(1, clientId);
                     try (ResultSet rsOTK = pstOTK.executeQuery()) {
                         if (!rsOTK.next()) return null;
-                        byte[] otk = rsOTK.getBytes("client_one_time_key");
 
-                        // **now call the 5-arg KeyBundle ctor**
+                        int    keyId = rsOTK.getInt   ("key_ID");
+                        byte[] otk   = rsOTK.getBytes ("client_one_time_key");
+
+                        // call the new 6-arg KeyBundle ctor
                         return new KeyBundle(
                                 rsaIdPub,
                                 x25519IdPub,
                                 spkPub,
                                 signature,
-                                otk
+                                otk,
+                                keyId
                         );
                     }
                 }
             }
         }
     }
+
+
+    /**
+     * Loads the next one-time key for `username` and converts its DB key_ID
+     * into the local index (1…N) by subtracting the user’s first key_ID.
+     */
+    public static KeyBundle getUserKeyBundleLocal(String username) throws SQLException {
+        // 1) load the “raw” bundle with the real DB key_ID
+        KeyBundle dbBundle = getUserKeyBundle(username);
+        if (dbBundle == null) return null;
+
+        // 2) compute local slot = realKeyId – firstKeyId + 1
+        int clientId   = getClientIdByName(username);
+        int firstKeyId = getFirstKeyIdForClient(clientId);
+        int localIndex = dbBundle.getOneTimeKeyID() - firstKeyId + 1;
+
+        // 3) return a new bundle with the same keys but localIndex
+        return new KeyBundle(
+                dbBundle.getRsaIdentityPub(),
+                dbBundle.getX25519IdentityPub(),
+                dbBundle.getX25519SigningPub(),
+                dbBundle.getSignature(),
+                dbBundle.getOneTimeKey(),
+                localIndex
+        );
+    }
+
+
+
 
 
 
@@ -360,4 +398,192 @@ public class DBConnect {
             return "DB error: " + e.getMessage();
         }
     }
+
+    public static String Touch(
+            String initiator,
+            String receiver,
+            int    keyId
+    ) throws SQLException {
+        String selectSQL =
+                "SELECT id "
+                        + "FROM handShake "
+                        + "WHERE (initiator = ? AND receiver = ?) "
+                        + "   OR (initiator = ? AND receiver = ?) "
+                        + "LIMIT 1";
+        // note: now inserting key_id as the 3rd column
+        String insertSQL =
+                "INSERT INTO handShake (initiator, receiver, key_id) "
+                        + "VALUES (?, ?, ?)";
+
+        try (Connection conn = getConnection();
+             PreparedStatement psSelect = conn.prepareStatement(selectSQL)) {
+
+            psSelect.setString(1, initiator);
+            psSelect.setString(2, receiver);
+            psSelect.setString(3, receiver);
+            psSelect.setString(4, initiator);
+
+            try (ResultSet rs = psSelect.executeQuery()) {
+                if (rs.next()) {
+                    // handshake already exists
+                    return "Found";
+                }
+            }
+
+            try (PreparedStatement psInsert = conn.prepareStatement(insertSQL, Statement.RETURN_GENERATED_KEYS)) {
+                psInsert.setString(1, initiator);
+                psInsert.setString(2, receiver);
+                psInsert.setInt   (3, keyId);       // ← new parameter
+                int rows = psInsert.executeUpdate();
+
+                if (rows == 0) {
+                    return null;
+                }
+                try (ResultSet genKeys = psInsert.getGeneratedKeys()) {
+                    if (genKeys.next()) {
+                        return "Added";
+                    } else {
+                        return null;
+                    }
+                }
+            }
+        }
+        catch (SQLException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /** Returns the key_id for an existing handshake between these two users. */
+    public static int getHandshakeKeyId(String initiator, String receiver) throws SQLException {
+        String sql =
+                "SELECT key_id " +
+                        "  FROM handShake " +
+                        " WHERE (initiator = ? AND receiver = ?) " +
+                        "    OR (initiator = ? AND receiver = ?) " +
+                        " LIMIT 1";
+
+        try (Connection conn = getConnection();
+             PreparedStatement pst = conn.prepareStatement(sql)) {
+
+            pst.setString(1, initiator);
+            pst.setString(2, receiver);
+            pst.setString(3, receiver);
+            pst.setString(4, initiator);
+
+            try (ResultSet rs = pst.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("key_id");
+                } else {
+                    throw new SQLException(
+                            "No existing handshake found for " + initiator + "↔" + receiver
+                    );
+                }
+            }
+        }
+    }
+
+    public static int getKeyIdByLocalIndex(int clientId, int index) throws SQLException {
+        String sql =
+                "SELECT key_ID " +
+                        "  FROM oneTimeKeys " +
+                        " WHERE client_id = ? " +
+                        " ORDER BY key_ID ASC " +
+                        " LIMIT 1 OFFSET ?";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, clientId);
+            ps.setInt(2, index - 1);             // OFFSET is zero-based
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("key_ID");
+                } else {
+                    throw new IllegalArgumentException(
+                            "Index " + index +
+                                    " out of range for client " + clientId
+                    );
+                }
+            }
+        }
+    }
+
+    public static int getClientIdByName(String username) throws SQLException {
+        String sql = "SELECT client_id FROM client WHERE client_name = ?";
+        try (var c = getConnection();
+             var p = c.prepareStatement(sql)) {
+            p.setString(1, username);
+            try (var r = p.executeQuery()) {
+                if (!r.next()) throw new SQLException("Unknown user " + username);
+                return r.getInt(1);
+            }
+        }
+    }
+
+    public static int getFirstKeyIdForClient(int clientId) throws SQLException {
+        String sql =
+                "SELECT MIN(key_ID) AS firstId " +
+                        "  FROM oneTimeKeys " +
+                        " WHERE client_id = ?";
+        try (var c = getConnection();
+             var p = c.prepareStatement(sql)) {
+            p.setInt(1, clientId);
+            try (var r = p.executeQuery()) {
+                if (!r.next()) throw new SQLException("No keys for client " + clientId);
+                return r.getInt("firstId");
+            }
+        }
+    }
+
+
+
+    public static String storeOfflineMessage(
+            String sender,
+            String receiver,
+            byte[] headerPub,
+            byte[] iv,
+            byte[] ciphertext
+    ) throws SQLException {
+        String sql = "INSERT INTO offline_messages (sender, receiver, header_pub, iv, packet) VALUES (?, ?, ?, ?, ?)";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, sender);
+            ps.setString(2, receiver);
+            ps.setBytes(3, headerPub);
+            ps.setBytes(4, iv);
+            ps.setBytes(5, ciphertext);
+            ps.executeUpdate();
+            return "Stored";
+        }
+    }
+
+    public static List<DirectMessagePacket> getOfflineMessages(String receiver) throws SQLException {
+        String sql = "SELECT sender, header_pub, iv, packet FROM offline_messages WHERE receiver = ? ORDER BY timestamp";
+        List<DirectMessagePacket> list = new ArrayList<>();
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, receiver);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String sender = rs.getString("sender");
+                    byte[] header = rs.getBytes("header_pub");
+                    byte[] iv     = rs.getBytes("iv");
+                    byte[] ct     = rs.getBytes("packet");
+                    list.add(new DirectMessagePacket(sender, receiver, header, iv, ct));
+                }
+            }
+        }
+        return list;
+    }
+
+    public static String deleteOfflineMessages(String receiver) throws SQLException {
+        String sql = "DELETE FROM offline_messages WHERE receiver = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, receiver);
+            int rows = ps.executeUpdate();
+            return "Deleted " + rows;
+        }
+    }
+
+
 }

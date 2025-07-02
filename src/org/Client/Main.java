@@ -39,6 +39,9 @@ public class Main {
             // session store for ratchet states, keyed by Base64(rsaIdentityPub)
             final Map<String, DoubleRatchetState> sessionStore = new ConcurrentHashMap<>();
             final Map<String, List<DirectMessagePacket>> pendingMessages = new ConcurrentHashMap<>();
+            // field somewhere:
+            final AtomicReference<KeyBundle> selectedPeerKeyBundleRef = new AtomicReference<>();
+
 
             // user state
             String   username   = null;
@@ -205,21 +208,6 @@ public class Main {
                 x25519IdentityPriv = loadX25519PrivateKey(p, u + "_x25519_identity_key.enc");
                 System.out.println("🔑 Loaded X25519 identity key.");
 
-                // load one-time keys
-                List<KeyPair> oneTimeKPs =
-                        loadOneTimeKeyPairsEncrypted(p, u + "_onetime_keys.enc");
-                System.out.println("🔑 Loaded " + oneTimeKPs.size() + " one-time keys.");
-
-                // ← NEW: re-send one-time keys to server so they’re back in the DB
-                for (KeyPair otp : oneTimeKPs) {
-                    oneTimeKeysPacket pkt =
-                            new oneTimeKeysPacket(u, otp.getPublic().getEncoded());
-                    byte[] encrypted = PacketUtils.encryptPacketAES(pkt, sessionKey, iv);
-                    output.writeObject(encrypted);
-                    output.flush();
-                }
-                System.out.println("🔁 Re-sent one-time keys to server.");
-
                 // send LoginPacket
                 LoginPacket login = new LoginPacket(u, p);
                 output.writeObject(PacketUtils.encryptPacketAES(login, sessionKey, iv));
@@ -250,7 +238,6 @@ public class Main {
                 userPass = p;
                 userPriv  = priv;
                 userPub   = pub;
-
             }
 
             //
@@ -262,6 +249,7 @@ public class Main {
             PrivateKey finalX25519IdentityPriv = x25519IdentityPriv;
             PrivateKey finalX25519IdentityPriv1 = x25519IdentityPriv;
 
+            String finalUsername = username;
             new Thread(() -> {
                 try {
                     while (true) {
@@ -300,13 +288,21 @@ public class Main {
                                 // 2️⃣ Store their X25519 identity key for indexing
                                 selectedPeerIdPubBytesRef.set(kr.getX25519IdentityPub());
 
-                                // 3️⃣ Consume one-time key locally
+                                // 📌 Keep the bundle around for possible HandShake2Packet
+                                selectedPeerKeyBundleRef.set(kr);
+
+                                // 3️⃣ Consume the one-time key by its ID (this is already the local index)
+                                int otkId = kr.getOneTimeKeyID();
                                 List<KeyPair> oneTimeKPs = loadOneTimeKeyPairsEncrypted(pwd, uname + "_onetime_keys.enc");
                                 if (oneTimeKPs.isEmpty()) {
                                     System.err.println("❌ No one-time keys left!");
                                     break;
                                 }
-                                oneTimeKPs.remove(0);
+                                if (otkId < 1 || otkId > oneTimeKPs.size()) {
+                                    System.err.println("❌ Invalid one-time key ID: " + otkId);
+                                    break;
+                                }
+                                KeyPair usedOtk = oneTimeKPs.remove(otkId - 1);
                                 saveOneTimeKeysEncrypted(oneTimeKPs, pwd, uname + "_onetime_keys.enc");
                                 System.out.println("🔐 " + oneTimeKPs.size() + " one-time keys remain.");
 
@@ -317,9 +313,9 @@ public class Main {
 
                                 KeyPair ephKP = KeyPairGenerator.getInstance("X25519").generateKeyPair();
                                 byte[] dh1 = x25519(finalX25519IdentityPriv, theirX25519SPub);
-                                byte[] dh2 = x25519(ephKP.getPrivate(),   theirX25519Id);
-                                byte[] dh3 = x25519(ephKP.getPrivate(),   theirX25519SPub);
-                                byte[] dh4 = x25519(ephKP.getPrivate(),   theirX25519OT);
+                                byte[] dh2 = x25519(ephKP.getPrivate(),        theirX25519Id);
+                                byte[] dh3 = x25519(ephKP.getPrivate(),        theirX25519SPub);
+                                byte[] dh4 = x25519(usedOtk.getPrivate(),      theirX25519OT);
 
                                 ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
                                 buf.put(dh1).put(dh2).put(dh3).put(dh4);
@@ -333,7 +329,7 @@ public class Main {
                                 // 6️⃣ Initialize your DoubleRatchetState
                                 DoubleRatchetState dr = new DoubleRatchetState(
                                         rootKey,
-                                        ephKP.getPrivate(),
+                                        ephKP,
                                         theirX25519SPub,
                                         sendCK,
                                         recvCK
@@ -341,6 +337,17 @@ public class Main {
                                 String peerId = Base64.getEncoder().encodeToString(kr.getX25519IdentityPub());
                                 sessionStore.put(peerId, dr);
                                 System.out.println("✅ Double Ratchet initialized for " + peer);
+
+
+                                peer = selectedPeerUsernameRef.get();
+                                // 5️⃣ Send handshake initiation to peer
+                                HandshakeInitPacket hip = new HandshakeInitPacket(
+                                        finalUsername,
+                                        peer,
+                                        dr.getDhPublic().getEncoded()
+                                );
+                                output.writeObject(PacketUtils.encryptPacketAES(hip, sessionKey, iv));
+
 
                                 // 7️⃣ Replay any buffered messages
                                 List<DirectMessagePacket> bufList = pendingMessages.remove(peerId);
@@ -357,6 +364,110 @@ public class Main {
                                     }
                                 }
                             }
+
+                            case "HandshakeInit" -> {
+                                HandshakeInitPacket hip = (HandshakeInitPacket) raw;
+                                DoubleRatchetState dr = sessionStore.get(hip.getSender());
+                                if (dr != null) {
+                                    PublicKey theirHeader = KeyFactory.getInstance("X25519")
+                                            .generatePublic(new X509EncodedKeySpec(hip.getHeaderPub()));
+                                    dr.ratchetReceive(theirHeader);
+                                    saveRatchetStateEncrypted(dr, pwd, uname + "_" + hip.getSender() + ".ratchet");
+                                    // Send ack back
+                                    HandshakeAckPacket hap = new HandshakeAckPacket(
+                                            finalUsername,
+                                            hip.getSender(),
+                                            dr.getDhPublic().getEncoded()
+                                    );
+                                    output.writeObject(PacketUtils.encryptPacketAES(hap, sessionKey, iv));
+                                }
+                            }
+
+                            case "HandshakeAck" -> {
+                                HandshakeAckPacket hap = (HandshakeAckPacket) raw;
+                                DoubleRatchetState dr = sessionStore.get(hap.getSender());
+                                if (dr != null) {
+                                    PublicKey theirHeader = KeyFactory.getInstance("X25519")
+                                            .generatePublic(new X509EncodedKeySpec(hap.getHeaderPub()));
+                                    dr.ratchetReceive(theirHeader);
+                                    saveRatchetStateEncrypted(dr, pwd, uname + "_" + hap.getSender() + ".ratchet");
+                                    System.out.println("🔄 Double Ratchet established with " + hap.getSender());
+                                }
+                            }
+
+                            case "HandShake2Packet" -> {
+                                HandShake2Packet p2 = (HandShake2Packet) raw;
+                                String peer = selectedPeerUsernameRef.get();
+                                System.out.println("Got HandShake2Packet for " + peer + ", keyId=" + p2.getKey());
+
+                                // ❸ Retrieve the previously stored KeyBundle
+                                KeyBundle kr = selectedPeerKeyBundleRef.get();
+                                if (kr == null) {
+                                    System.err.println("❌ No stored KeyBundle for " + peer);
+                                    break;
+                                }
+
+                                // ❹ Consume the one-time key by its local index
+                                int otkId = p2.getKey();
+                                List<KeyPair> oneTimeKPs = loadOneTimeKeyPairsEncrypted(pwd, uname + "_onetime_keys.enc");
+                                if (oneTimeKPs.isEmpty()) {
+                                    System.err.println("❌ No one-time keys left!");
+                                    break;
+                                }
+                                if (otkId < 1 || otkId > oneTimeKPs.size()) {
+                                    System.err.println("❌ Invalid one-time key ID: " + otkId);
+                                    break;
+                                }
+                                KeyPair usedOtk = oneTimeKPs.remove(otkId - 1);
+                                saveOneTimeKeysEncrypted(oneTimeKPs, pwd, uname + "_onetime_keys.enc");
+                                System.out.println("🔐 " + oneTimeKPs.size() + " one-time keys remain.");
+
+                                // ❺ Perform the same X3DH DH operations
+                                PublicKey theirX25519Id   = bytesToX25519Pub(kr.getX25519IdentityPub());
+                                PublicKey theirX25519SPub = bytesToX25519Pub(kr.getX25519SigningPub());
+                                PublicKey theirX25519OT   = bytesToX25519Pub(kr.getOneTimeKey());
+
+                                KeyPair ephKP = KeyPairGenerator.getInstance("X25519").generateKeyPair();
+                                byte[] dh1 = x25519(finalX25519IdentityPriv, theirX25519SPub);
+                                byte[] dh2 = x25519(ephKP.getPrivate(),        theirX25519Id);
+                                byte[] dh3 = x25519(ephKP.getPrivate(),        theirX25519SPub);
+                                byte[] dh4 = x25519(usedOtk.getPrivate(),      theirX25519OT);
+
+                                ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
+                                buf.put(dh1).put(dh2).put(dh3).put(dh4);
+                                byte[] masterSecret = buf.array();
+
+                                // ❻ Derive root+chain keys, init ratchet, replay
+                                byte[] rootKey = hkdf(new byte[32], masterSecret, "X3DH".getBytes(UTF_8), 32);
+                                byte[] sendCK  = hkdfExpand(rootKey, "send".getBytes(UTF_8), 32);
+                                byte[] recvCK  = hkdfExpand(rootKey, "recv".getBytes(UTF_8), 32);
+
+                                DoubleRatchetState dr = new DoubleRatchetState(
+                                        rootKey,
+                                        ephKP,
+                                        theirX25519SPub,
+                                        sendCK,
+                                        recvCK
+                                );
+                                String peerId = Base64.getEncoder().encodeToString(kr.getX25519IdentityPub());
+                                sessionStore.put(peerId, dr);
+                                System.out.println("✅ Double Ratchet initialized for " + peer);
+
+                                List<DirectMessagePacket> bufList = pendingMessages.remove(peerId);
+                                if (bufList != null) {
+                                    for (DirectMessagePacket old : bufList) {
+                                        DoubleRatchetState.Message env = new DoubleRatchetState.Message(
+                                                old.getHeaderPub(),
+                                                old.getIv(),
+                                                old.getCiphertext()
+                                        );
+                                        byte[] plain = dr.decrypt(env);
+                                        System.out.println("💬 " + old.getSender() + ": " + new String(plain, UTF_8));
+                                        saveRatchetStateEncrypted(dr, pwd, uname + "_" + old.getSender() + ".ratchet");
+                                    }
+                                }
+                            }
+
 
                             case "DirectMessage" -> {
                                 // unwrap from AES first:
@@ -405,17 +516,11 @@ public class Main {
                 if (line.equalsIgnoreCase("exit")) break;
 
                 if (line.startsWith("/select ")) {
-                    // store the selected peer in the AtomicReference
                     selectedPeerUsernameRef.set(line.substring(8).trim());
                     String peer = selectedPeerUsernameRef.get();
-
-                    // send the bundle request
-                    output.writeObject(PacketUtils.encryptPacketAES(
-                            new BundleRequestPacket(username, peer),
-                            sessionKey, iv
-                    ));
+                    HandShakePacket mao = new HandShakePacket(username, peer);
+                    output.writeObject(PacketUtils.encryptPacketAES(mao, sessionKey, iv));
                     output.flush();
-                    System.out.println("-- Requested KeyBundle for " + peer);
                     continue;
                 }
 
@@ -518,59 +623,171 @@ public class Main {
         return KeyFactory.getInstance("RSA").generatePrivate(keySpec);
     }
 
-    private static void saveOneTimeKeysEncrypted(List<KeyPair> keyPairs, String password, String filename) throws Exception {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        DataOutputStream dos = new DataOutputStream(baos);
+    private static void saveOneTimeKeysEncrypted(
+            List<KeyPair> keyPairs,
+            String password,
+            String filename
+    ) throws Exception {
+        // 1) Build a textual “1: key” listing, Base64-encoding each key
+        StringBuilder sb = new StringBuilder();
+        int index = 1;
+        Base64.Encoder b64 = Base64.getEncoder();
         for (KeyPair kp : keyPairs) {
-            byte[] pub = kp.getPublic().getEncoded();
-            dos.writeInt(pub.length); dos.write(pub);
-            byte[] pkcs8 = kp.getPrivate().getEncoded();
-            dos.writeInt(pkcs8.length); dos.write(pkcs8);
+            // public key
+            String pubB64 = b64.encodeToString(kp.getPublic().getEncoded());
+            sb.append(index++)
+                    .append(": ")
+                    .append(pubB64)
+                    .append(System.lineSeparator());
+
+            // private key
+            String privB64 = b64.encodeToString(kp.getPrivate().getEncoded());
+            sb.append(index++)
+                    .append(": ")
+                    .append(privB64)
+                    .append(System.lineSeparator());
         }
-        dos.flush();
-        byte[] plain = baos.toByteArray();
-        byte[] salt = new byte[16]; new SecureRandom().nextBytes(salt);
-        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65536, 256);
+        byte[] plain = sb.toString().getBytes(StandardCharsets.UTF_8);
+
+        // 2) Derive a salt and AES key from the password
+        byte[] salt = new byte[16];
+        new SecureRandom().nextBytes(salt);
+
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65_536, 256);
         SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         byte[] keyBytes = skf.generateSecret(spec).getEncoded();
         SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 3) Encrypt with AES/CBC/PKCS5Padding
         Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
         cipher.init(Cipher.ENCRYPT_MODE, aesKey);
-        byte[] iv = cipher.getParameters().getParameterSpec(IvParameterSpec.class).getIV();
+        byte[] iv = cipher.getParameters()
+                .getParameterSpec(IvParameterSpec.class)
+                .getIV();
         byte[] ciphertext = cipher.doFinal(plain);
+
+        // 4) Write out: [salt][iv][ciphertext]
         try (FileOutputStream fos = new FileOutputStream(filename)) {
-            fos.write(salt); fos.write(iv); fos.write(ciphertext);
+            fos.write(salt);
+            fos.write(iv);
+            fos.write(ciphertext);
         }
     }
 
-    private static List<KeyPair> loadOneTimeKeyPairsEncrypted(String password, String filename) throws Exception {
+    private static KeyPair loadOneTimeKeyPairEncrypted(
+            String password,
+            String filename,
+            int pairNumber
+    ) throws Exception {
+        // 1) read file → salt | iv | ciphertext
         byte[] file = Files.readAllBytes(Paths.get(filename));
         ByteBuffer buf = ByteBuffer.wrap(file);
-        byte[] salt = new byte[16]; buf.get(salt);
-        byte[] iv   = new byte[16]; buf.get(iv);
-        byte[] cipherText = new byte[buf.remaining()]; buf.get(cipherText);
-        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65536, 256);
+
+        byte[] salt = new byte[16];
+        buf.get(salt);
+
+        byte[] iv = new byte[16];
+        buf.get(iv);
+
+        byte[] cipherText = new byte[buf.remaining()];
+        buf.get(cipherText);
+
+        // 2) derive AES key from password + salt
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65_536, 256);
         SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         byte[] keyBytes = skf.generateSecret(spec).getEncoded();
         SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 3) decrypt
         Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
         cipher.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
         byte[] plain = cipher.doFinal(cipherText);
-        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(plain));
+
+        // 4) split into lines
+        String text = new String(plain, StandardCharsets.UTF_8).trim();
+        String[] lines = text.split("\\R");  // split on any line break
+
+        // 5) locate the two lines for this pair
+        //    each pair i occupies lines[(i-1)*2] (pub) and [(i-1)*2 + 1] (priv)
+        int pubLineIndex  = (pairNumber - 1) * 2;
+        int privLineIndex = pubLineIndex + 1;
+
+        if (pubLineIndex < 0 || privLineIndex >= lines.length) {
+            throw new IllegalArgumentException(
+                    "Requested pairNumber=" + pairNumber +
+                            " is out of range; only " + (lines.length/2) + " pairs available."
+            );
+        }
+
+        // 6) extract Base64 payload after the colon
+        Base64.Decoder b64 = Base64.getDecoder();
+        String pubB64  = lines[pubLineIndex].split(":", 2)[1].trim();
+        String privB64 = lines[privLineIndex].split(":", 2)[1].trim();
+
+        byte[] pubBytes  = b64.decode(pubB64);
+        byte[] privBytes = b64.decode(privB64);
+
+        // 7) rebuild X25519 key objects
+        KeyFactory kf = KeyFactory.getInstance("X25519");
+        PublicKey pubKey = kf.generatePublic(new X509EncodedKeySpec(pubBytes));
+        PrivateKey privKey = kf.generatePrivate(new PKCS8EncodedKeySpec(privBytes));
+
+        return new KeyPair(pubKey, privKey);
+    }
+
+    private static List<KeyPair> loadOneTimeKeyPairsEncrypted(
+            String password,
+            String filename
+    ) throws Exception {
+        // 1) read file → salt | iv | ciphertext
+        byte[] file = Files.readAllBytes(Paths.get(filename));
+        ByteBuffer buf = ByteBuffer.wrap(file);
+
+        byte[] salt = new byte[16];
+        buf.get(salt);
+
+        byte[] iv = new byte[16];
+        buf.get(iv);
+
+        byte[] cipherText = new byte[buf.remaining()];
+        buf.get(cipherText);
+
+        // 2) derive AES key
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65_536, 256);
+        SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = skf.generateSecret(spec).getEncoded();
+        SecretKey aesKey = new SecretKeySpec(keyBytes, "AES");
+
+        // 3) decrypt
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
+        byte[] plain = cipher.doFinal(cipherText);
+
+        // 4) split & rebuild all pairs
+        String text = new String(plain, StandardCharsets.UTF_8).trim();
+        String[] lines = text.split("\\R");
+
+        Base64.Decoder b64 = Base64.getDecoder();
+        KeyFactory kf = KeyFactory.getInstance("X25519");
         List<KeyPair> pairs = new ArrayList<>();
-        while (dis.available() > 0) {
-            int pubLen = dis.readInt();
-            byte[] pub = new byte[pubLen]; dis.readFully(pub);
-            PublicKey pubKey = KeyFactory.getInstance("X25519")
-                    .generatePublic(new X509EncodedKeySpec(pub));
-            int privLen = dis.readInt();
-            byte[] pkcs8 = new byte[privLen]; dis.readFully(pkcs8);
-            PrivateKey privKey = KeyFactory.getInstance("X25519")
-                    .generatePrivate(new PKCS8EncodedKeySpec(pkcs8));
+
+        for (int i = 0; i < lines.length; i += 2) {
+            // pub
+            String pubB64  = lines[i].split(":", 2)[1].trim();
+            byte[] pubBytes = b64.decode(pubB64);
+            PublicKey pubKey = kf.generatePublic(new X509EncodedKeySpec(pubBytes));
+
+            // priv
+            String privB64 = lines[i+1].split(":", 2)[1].trim();
+            byte[] privBytes = b64.decode(privB64);
+            PrivateKey privKey = kf.generatePrivate(new PKCS8EncodedKeySpec(privBytes));
+
             pairs.add(new KeyPair(pubKey, privKey));
         }
+
         return pairs;
     }
+
 
     private static byte[] x25519(PrivateKey sk, PublicKey pk) throws GeneralSecurityException {
         KeyAgreement ka = KeyAgreement.getInstance("X25519");

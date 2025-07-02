@@ -14,19 +14,21 @@ import java.util.Arrays;
 
 /**
  * Double Ratchet State with ratchet steps, message key derivation,
- * and AES-GCM encrypt/decrypt. Uses separate DH private/public.
+ * and AES-GCM encrypt/decrypt. Uses full DH keypairs for send.
  */
 public class DoubleRatchetState implements Serializable {
     private static final long serialVersionUID = 1L;
+
     private byte[] rootKey;
-    private PrivateKey dhPrivate;   // our current DH private key
-    private PublicKey  dhTheirPub;  // their current DH public key
+    private KeyPair dhPair;            // our current DH keypair
+    private PublicKey dhTheirPub;      // their current DH public key
     private byte[] sendChainKey;
     private byte[] recvChainKey;
 
+
     public static class Message {
-        public final byte[] headerPub; // our ephemeral DH pub for this msg
-        public final byte[] iv;        // AES-GCM IV
+        public final byte[] headerPub;   // our ephemeral DH pub for this msg
+        public final byte[] iv;          // AES-GCM IV
         public final byte[] ciphertext;
         public Message(byte[] headerPub, byte[] iv, byte[] ciphertext) {
             this.headerPub = headerPub;
@@ -35,15 +37,22 @@ public class DoubleRatchetState implements Serializable {
         }
     }
 
+    /**
+     * @param rootKey       initial root key
+     * @param dhPair        our initial DH keypair (private+pub)
+     * @param dhTheirPub    their DH public key
+     * @param sendChainKey  initial sending chain key
+     * @param recvChainKey  initial receiving chain key
+     */
     public DoubleRatchetState(
-            byte[]     rootKey,
-            PrivateKey dhPrivate,
-            PublicKey  dhTheirPub,
-            byte[]     sendChainKey,
-            byte[]     recvChainKey
+            byte[] rootKey,
+            KeyPair dhPair,
+            PublicKey dhTheirPub,
+            byte[] sendChainKey,
+            byte[] recvChainKey
     ) {
-        this.rootKey      = Arrays.copyOf(rootKey,      rootKey.length);
-        this.dhPrivate    = dhPrivate;
+        this.rootKey      = Arrays.copyOf(rootKey, rootKey.length);
+        this.dhPair       = dhPair;
         this.dhTheirPub   = dhTheirPub;
         this.sendChainKey = Arrays.copyOf(sendChainKey, sendChainKey.length);
         this.recvChainKey = Arrays.copyOf(recvChainKey, recvChainKey.length);
@@ -51,7 +60,8 @@ public class DoubleRatchetState implements Serializable {
 
     // getters
     public byte[]     getRootKey()      { return Arrays.copyOf(rootKey, rootKey.length); }
-    public PrivateKey getDhPrivate()    { return dhPrivate; }
+    public PrivateKey getDhPrivate()    { return dhPair.getPrivate(); }
+    public PublicKey  getDhPublic()     { return dhPair.getPublic(); }
     public PublicKey  getDhTheirPub()   { return dhTheirPub; }
     public byte[]     getSendChainKey() { return Arrays.copyOf(sendChainKey, sendChainKey.length); }
     public byte[]     getRecvChainKey() { return Arrays.copyOf(recvChainKey, recvChainKey.length); }
@@ -60,12 +70,12 @@ public class DoubleRatchetState implements Serializable {
      * Perform a receive ratchet when a new DH public arrives.
      */
     public void ratchetReceive(PublicKey theirNewPub) throws GeneralSecurityException {
-        byte[] dh = dhAgreement(dhPrivate, theirNewPub);
+        byte[] dh = dhAgreement(dhPair.getPrivate(), theirNewPub);
         byte[] combined = hkdf(rootKey, dh, "Ratchet".getBytes(), 64);
         rootKey      = Arrays.copyOfRange(combined, 0, 32);
         recvChainKey = Arrays.copyOfRange(combined, 32, 48);
         sendChainKey = Arrays.copyOfRange(combined, 48, 64);
-        dhTheirPub = theirNewPub;
+        this.dhTheirPub = theirNewPub;
     }
 
     /**
@@ -79,7 +89,7 @@ public class DoubleRatchetState implements Serializable {
         rootKey      = Arrays.copyOfRange(combined, 0, 32);
         sendChainKey = Arrays.copyOfRange(combined, 32, 48);
         recvChainKey = Arrays.copyOfRange(combined, 48, 64);
-        dhPrivate = newKP.getPrivate();
+        this.dhPair = newKP;
     }
 
     private byte[] nextSendMessageKey() throws GeneralSecurityException {
@@ -94,31 +104,67 @@ public class DoubleRatchetState implements Serializable {
         return mk;
     }
 
+
+
+    // at the top of DoubleRatchetState, if you haven’t already
+    private static final byte PACKET_TYPE_RATCHET = 0x01;
+
+    // ————————————————
+// 1) Encrypt a plaintext → Message
+// ————————————————
     public Message encrypt(byte[] plaintext) throws GeneralSecurityException {
-        ratchetSend();
-        byte[] msgKey = nextSendMessageKey();
+        // derive the next send-message key
+        byte[] mk = nextSendMessageKey();
+        SecretKeySpec messageKey = new SecretKeySpec(mk, "AES");
+
+        // AAD = our current DH public
+        byte[] headerPub = dhPair.getPublic().getEncoded();
+
+        // fresh 12-byte IV
+        byte[] iv = new byte[12];
+        new SecureRandom().nextBytes(iv);
+
+        // AES-GCM
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        byte[] iv = new byte[12]; new SecureRandom().nextBytes(iv);
-        GCMParameterSpec spec = new GCMParameterSpec(128, iv);
-        SecretKeySpec kspec = new SecretKeySpec(msgKey, "AES");
-        cipher.init(Cipher.ENCRYPT_MODE, kspec, spec);
-        byte[] ct = cipher.doFinal(plaintext);
-        byte[] header = dhPrivate.getEncoded();
-        return new Message(header, iv, ct);
+        cipher.init(Cipher.ENCRYPT_MODE, messageKey, new GCMParameterSpec(128, iv));
+        cipher.updateAAD(headerPub);
+        byte[] ciphertext = cipher.doFinal(plaintext);
+
+        return new Message(headerPub, iv, ciphertext);
     }
 
-    public byte[] decrypt(Message msg) throws GeneralSecurityException {
-        PublicKey theirPub = KeyFactory.getInstance("X25519")
-                .generatePublic(new X509EncodedKeySpec(msg.headerPub));
-        if (!theirPub.equals(dhTheirPub)) ratchetReceive(theirPub);
-        byte[] msgKey = nextRecvMessageKey();
+    // ————————————————
+// 2) Decrypt a received Message → plaintext
+// ————————————————
+    /**
+     * Decrypt a received ratchet Message → plaintext
+     */
+    public byte[] decrypt(Message env) throws GeneralSecurityException {
+        // only ratchet if they really sent a *new* DH pub (compare raw encodings)
+        if (!Arrays.equals(env.headerPub, dhTheirPub.getEncoded())) {
+            PublicKey theirPub = KeyFactory
+                    .getInstance("X25519")
+                    .generatePublic(new X509EncodedKeySpec(env.headerPub));
+            ratchetReceive(theirPub);
+        }
+
+        // now derive the next recv-message key
+        byte[] mk = nextRecvMessageKey();
+        SecretKeySpec messageKey = new SecretKeySpec(mk, "AES");
+
+        // AES-GCM decrypt (AAD = headerPub)
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        GCMParameterSpec spec = new GCMParameterSpec(128, msg.iv);
-        SecretKeySpec kspec = new SecretKeySpec(msgKey, "AES");
-        cipher.init(Cipher.DECRYPT_MODE, kspec, spec);
-        return cipher.doFinal(msg.ciphertext);
+        cipher.init(Cipher.DECRYPT_MODE, messageKey,
+                new GCMParameterSpec(128, env.iv));
+        cipher.updateAAD(env.headerPub);
+        return cipher.doFinal(env.ciphertext);
     }
 
+
+
+
+
+    // --- HKDF & HMAC helpers ---
     private static byte[] dhAgreement(PrivateKey sk, PublicKey pk) throws GeneralSecurityException {
         KeyAgreement ka = KeyAgreement.getInstance("X25519");
         ka.init(sk);
@@ -134,9 +180,11 @@ public class DoubleRatchetState implements Serializable {
 
     private static byte[] hkdf(byte[] salt, byte[] ikm, byte[] info, int length)
             throws GeneralSecurityException {
+        // HKDF-Extract
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(salt != null ? salt : new byte[32], "HmacSHA256"));
         byte[] prk = mac.doFinal(ikm);
+        // HKDF-Expand
         byte[] okm = new byte[length], t = new byte[0];
         int copied = 0; byte ctr = 1;
         mac.init(new SecretKeySpec(prk, "HmacSHA256"));
