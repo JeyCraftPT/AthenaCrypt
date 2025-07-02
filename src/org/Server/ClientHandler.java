@@ -154,23 +154,35 @@ public class ClientHandler implements Runnable {
                 output.flush();
             }
 
-            case "DirectMessage" ->{
-                DirectMessagePacket msg = (DirectMessagePacket)packet;
-                Socket s = Main.users.get(msg.getRecipient());
-                ClientHandler a = Main.clientHandlers.get(s);
-
-                System.out.println(msg.getRecipient());
-                System.out.println(s.getRemoteSocketAddress());
-                a.output.writeObject(msg);
-
+            case "DirectMessage" -> {
+                DirectMessagePacket msg = (DirectMessagePacket) packet;
+                Socket destSock = Main.users.get(msg.getRecipient());
+                ClientHandler destHandler = Main.clientHandlers.get(destSock);
+                if (destHandler == null) {
+                    System.err.println("❌ No handler for user “" + msg.getRecipient() + "”");
+                    break;
+                }
+                // AES-encrypt for that user’s session:
+                byte[] wrapped = PacketUtils.encryptPacketAES(
+                        msg,
+                        destHandler.sessionKey,
+                        destHandler.iv
+                );
+                destHandler.output.writeObject(wrapped);
+                destHandler.output.flush();
             }
+
+
+
             case "AESAnswer" ->{
 
                 AESAnswer c = (AESAnswer)packet;
 
                 Socket s = Main.users.get(c.getRecipient());
                 ClientHandler a = Main.clientHandlers.get(s);
-                a.output.writeObject(c);
+                byte[] wrapped = PacketUtils.encryptPacketAES(c, a.sessionKey, a.iv);
+                a.output.writeObject(wrapped);
+                a.output.flush();
             }
             case "AESFinal" ->{
 
@@ -179,7 +191,9 @@ public class ClientHandler implements Runnable {
                 Socket s = Main.users.get(fin.getRecipient());
                 ClientHandler a = Main.clientHandlers.get(s);
 
-                a.output.writeObject(fin);
+                byte[] wrapped = PacketUtils.encryptPacketAES(fin, a.sessionKey, a.iv);
+                a.output.writeObject(wrapped);
+                a.output.flush();
 
             }
             case "BundleRequest" -> {

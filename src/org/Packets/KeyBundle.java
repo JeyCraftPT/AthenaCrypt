@@ -1,6 +1,8 @@
 package org.Packets;
 
-public class KeyBundle extends Packet {
+import java.io.Serializable;
+
+public class KeyBundle extends Packet implements Serializable {
     // RSA identity‐key (for verifying SPK signatures)
     private final byte[] rsaIdentityPub;
     // X25519 identity‐key (for X3DH IK_A)
