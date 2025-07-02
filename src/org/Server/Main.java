@@ -4,7 +4,6 @@ import org.Keys.RSAKeys;
 import org.Packets.InfoPacket;
 import org.Packets.Packet;
 import org.Packets.UserListPacket;
-import org.mariadb.jdbc.client.Client;
 
 import java.net.ServerSocket;
 import java.net.Socket;

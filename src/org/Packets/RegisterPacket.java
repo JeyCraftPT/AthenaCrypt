@@ -1,44 +1,34 @@
-// src/org/Packets/RegisterPacket.java
 package org.Packets;
 
-import java.io.Serializable;
-
-public class RegisterPacket extends Packet implements Serializable {
-    private static final long serialVersionUID = 1L;
-
+public class RegisterPacket extends Packet {
     private final String username;
-    private final String password;
-    private final byte[] publicKeyBytes;
-    private final byte[] signedPreKey;
-    private final byte[] signature;
+    private final byte[] password;
+    private final byte[] rsaIdentityPub;     // RSA identity key (for signing)
+    private final byte[] x25519IdentityPub;  // X25519 identity key (for DH)
+    private final byte[] x25519SigningPub;   // X25519 signed-prekey (for DH)
+    private final byte[] signature;          // RSA-signature over x25519SigningPub
 
-    public RegisterPacket(String username, String password, byte[] publicKeyBytes,  byte[] signedPreKey,  byte[] signature) {
-        this.username        = username;
-        this.password        = password;
-        this.publicKeyBytes  = publicKeyBytes;
-        this.signedPreKey    = signedPreKey;
-        this.signature        = signature;
-    }
-
-    public String getUsername() {
-        return username;
-    }
-
-    public String getPassword() {
-        return password;
-    }
-
-    /** Returns the raw RSA public-key bytes for DB storage. */
-    public byte[] getPublicKeyBytes() {
-        return publicKeyBytes;
-    }
-    public byte[] getSignedPreKey() {
-        return signedPreKey;
+    public RegisterPacket(String username,
+                          byte[] password,
+                          byte[] rsaIdentityPub,
+                          byte[] x25519IdentityPub,
+                          byte[] x25519SigningPub,
+                          byte[] signature)
+    {
+        this.username           = username;
+        this.password           = password;
+        this.rsaIdentityPub     = rsaIdentityPub;
+        this.x25519IdentityPub  = x25519IdentityPub;
+        this.x25519SigningPub   = x25519SigningPub;
+        this.signature          = signature;
     }
 
-    public byte[] getSignature() {
-        return signature;
-    }
+    public String getUsername()              { return username;           }
+    public byte[] getPassword()              { return password;           }
+    public byte[] getRsaIdentityPub()        { return rsaIdentityPub;     }
+    public byte[] getX25519IdentityPub()     { return x25519IdentityPub;  }
+    public byte[] getX25519SigningPub()      { return x25519SigningPub;   }
+    public byte[] getSignature()             { return signature;          }
 
     @Override
     public String getType() {

@@ -3,6 +3,7 @@ package org.Server;
 
 import org.DataBase.DBConnect;
 import org.Packets.*;
+
 import java.io.*;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -60,18 +61,8 @@ public class ClientHandler implements Runnable {
                 byte[] raw = (byte[])input.readObject();
                 Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
                 handlePacket(pkt, output);
-                break;
             }
-            System.out.println("miau");
-            while (true){
-                Object obj = input.readObject();
-                if (!(obj instanceof Packet)) {
-                    throw new IOException("Expected Packet, got " + obj.getClass());
-                }
-                Packet raw = (Packet) obj;
-                handlePacket(raw, output);
 
-            }
         } catch (EOFException eof) {
             System.out.println("Client disconnected: " + username);
             DBConnect.goOffline(username);
@@ -91,10 +82,11 @@ public class ClientHandler implements Runnable {
                 String dbResult = DBConnect.RegiPOST(
                         reg.getUsername(),
                         reg.getPassword(),
-                        reg.getPublicKeyBytes(),  // make sure RegisterPacket carries this
-                        reg.getSignedPreKey(),
+                        reg.getRsaIdentityPub(),
+                        reg.getX25519IdentityPub(),   // ← send the identity‐pub too
+                        reg.getX25519SigningPub(),
                         reg.getSignature(),
-                        0                         // whatever your "role" or flag parameter is
+                        0
                 );
 
                 // 2) Build an InfoPacket with the DB's result message
@@ -167,18 +159,12 @@ public class ClientHandler implements Runnable {
                 Socket s = Main.users.get(msg.getRecipient());
                 ClientHandler a = Main.clientHandlers.get(s);
 
-                //TODO
-                // cena da cifra
-                // verificar isto...?
-
                 System.out.println(msg.getRecipient());
                 System.out.println(s.getRemoteSocketAddress());
                 a.output.writeObject(msg);
 
             }
             case "AESAnswer" ->{
-                //TODO
-                // confirmar isto
 
                 AESAnswer c = (AESAnswer)packet;
 
@@ -187,8 +173,7 @@ public class ClientHandler implements Runnable {
                 a.output.writeObject(c);
             }
             case "AESFinal" ->{
-                //TODO
-                // fazer isto tbm
+
                 AESFinal fin = (AESFinal)packet;
 
                 Socket s = Main.users.get(fin.getRecipient());
@@ -213,11 +198,8 @@ public class ClientHandler implements Runnable {
                         // send the bundle packet
                         output.writeObject(bundle);
 
-                        //TODO
-                        // tbm remover do ficheiro
-
                         // optionally, remove that one-time key row so it's single-use:
-                        // DBConnect.deleteOneTimeKey(who, bundle.getOneTimeKey());
+                        DBConnect.deleteOneTimeKey(who, bundle.getOneTimeKey());
                     }
                     output.flush();
                 } catch (SQLException | IOException e) {
