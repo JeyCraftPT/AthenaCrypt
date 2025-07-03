@@ -1,6 +1,7 @@
 package org.DataBase;
 
 import org.Packets.DirectMessagePacket;
+import org.Packets.HandshakeRecord;
 import org.Packets.KeyBundle;
 
 import javax.crypto.SecretKeyFactory;
@@ -401,8 +402,8 @@ public class DBConnect {
 
     public static String Touch(
             String initiator,
-            String receiver,
-            int    keyId
+            String receiver
+
     ) throws SQLException {
         String selectSQL =
                 "SELECT id "
@@ -430,29 +431,91 @@ public class DBConnect {
                 }
             }
 
-            try (PreparedStatement psInsert = conn.prepareStatement(insertSQL, Statement.RETURN_GENERATED_KEYS)) {
-                psInsert.setString(1, initiator);
-                psInsert.setString(2, receiver);
-                psInsert.setInt   (3, keyId);       // ← new parameter
-                int rows = psInsert.executeUpdate();
-
-                if (rows == 0) {
-                    return null;
-                }
-                try (ResultSet genKeys = psInsert.getGeneratedKeys()) {
-                    if (genKeys.next()) {
-                        return "Added";
-                    } else {
-                        return null;
-                    }
-                }
-            }
         }
         catch (SQLException e) {
             e.printStackTrace();
             return null;
         }
+        return selectSQL;
     }
+
+
+
+    public static HandshakeRecord getHandshakeRecord(String user1, String user2) {
+        String sql = """
+        SELECT initiator, receiver, ephemeral_Key, key_id
+        FROM handShake
+        WHERE (initiator = ? AND receiver = ?)
+           OR (initiator = ? AND receiver = ?)
+        LIMIT 1
+        """;
+
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, user1);
+            stmt.setString(2, user2);
+            stmt.setString(3, user2);
+            stmt.setString(4, user1);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return new HandshakeRecord(
+                            rs.getString("initiator"),
+                            rs.getString("receiver"),
+                            rs.getBytes("ephemeral_Key"),
+                            rs.getInt("key_id")
+                    );
+                }
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return null;
+    }
+
+    public static void PublishTouch(String initiator, String peer, byte[] EKey, int id) {
+        String selectSQL = """
+        SELECT id FROM handShake
+        WHERE (initiator = ? AND receiver = ?)
+           OR (initiator = ? AND receiver = ?)
+        LIMIT 1
+        """;
+
+        String insertSQL = """
+        INSERT INTO handShake (initiator, receiver, ephemeral_Key, key_id)
+        VALUES (?, ?, ?, ?)
+        """;
+
+        try (Connection conn = getConnection();
+             PreparedStatement psSelect = conn.prepareStatement(selectSQL)) {
+
+            psSelect.setString(1, initiator);
+            psSelect.setString(2, peer);
+            psSelect.setString(3, peer);
+            psSelect.setString(4, initiator);
+
+            try (ResultSet rs = psSelect.executeQuery()) {
+                if (rs.next()) {
+                    // already exists — do not insert
+                    return;
+                }
+            }
+
+            try (PreparedStatement psInsert = conn.prepareStatement(insertSQL)) {
+                psInsert.setString(1, initiator);
+                psInsert.setString(2, peer);
+                psInsert.setBytes(3, EKey);
+                psInsert.setInt(4, id);
+                psInsert.executeUpdate();
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
 
     /** Returns the key_id for an existing handshake between these two users. */
     public static int getHandshakeKeyId(String initiator, String receiver) throws SQLException {

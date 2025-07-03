@@ -163,9 +163,11 @@ public class ClientHandler implements Runnable {
             }
 
             case "DirectMessage" -> {
+                System.out.println("chegou cena");
                 DirectMessagePacket msg = (DirectMessagePacket) packet;
                 Socket destSock = Main.users.get(msg.getRecipient());
                 ClientHandler destHandler = Main.clientHandlers.get(destSock);
+                destHandler.output.writeObject(msg);
                 if (destHandler == null) {
                     // store for offline delivery
                      DBConnect.storeOfflineMessage(
@@ -177,42 +179,77 @@ public class ClientHandler implements Runnable {
                      );
                 break;
                 }
-                // AES-encrypt for that user’s session:
-                byte[] wrapped = PacketUtils.encryptPacketAES(
-                        msg,
-                        destHandler.sessionKey,
-                        destHandler.iv
-                );
-                destHandler.output.writeObject(wrapped);
-                destHandler.output.flush();
             }
+
 
             case "handshake" -> {
                 HandShakePacket handshake = (HandShakePacket) packet;
-                String initiator = handshake.getUsername();
-                String receiver  = handshake.getPerson();
+                String initiator = handshake.getUsername(); // sender of the handshake
+                String receiver = handshake.getPerson();    // target
 
-                // 1) Use the new helper to get a bundle whose oneTimeKeyID is local slot
+                // 1) Get the local one-time key bundle (we’ll send this back if handshake is new)
                 KeyBundle sendBundle = DBConnect.getUserKeyBundleLocal(receiver);
                 if (sendBundle == null) {
                     System.err.println("❌ No KeyBundle for " + receiver);
                     break;
                 }
 
-                // 2) Touch the DB with the real key_ID so FKs stay happy
+                // 2) Get the actual real key ID
                 int realKeyId = DBConnect.getUserKeyBundle(receiver).getOneTimeKeyID();
-                String result = DBConnect.Touch(initiator, receiver, realKeyId);
 
-                if ("Added".equals(result)) {
-                    // new handshake → send bundle and consume that real key
-                    output.writeObject(sendBundle);
-                    DBConnect.deleteOneTimeKey(receiver, sendBundle.getOneTimeKey());
+                // 3) Check if handshake already exists
+                HandshakeRecord record = DBConnect.getHandshakeRecord(initiator, receiver);
+                if (record != null) {
+                    // Handshake exists → Send Touched packet from the DB
+                    System.out.println("🔁 Handshake already exists for " + initiator + "↔" + receiver);
+
+                    String peer = record.getInitiator().equals(initiator)
+                            ? record.getReceiver()
+                            : record.getInitiator();
+
+                    Touched touched = new Touched(
+                            peer,
+                            initiator,
+                            record.getEphemeralKey(),
+                            record.getKeyID()
+                    );
+                    output.writeObject(touched);
+
                 } else {
-                    // already exists → resend the same bundle (with local index)
-                    System.out.println("🔁 Handshake already exists for "
-                            + initiator + "↔" + receiver);
-                    output.writeObject(sendBundle);
+                    // ❗ Handshake does not exist → insert and respond with Touched
+
+                    // Use realKeyId and bundle's ephemeral key
+                    byte[] ephKey = sendBundle.getOneTimeKey();
+
+                    DBConnect.PublishTouch(initiator, receiver, ephKey, realKeyId);
+                    DBConnect.deleteOneTimeKey(receiver, sendBundle.getOneTimeKey());
+
+                    Touched touched = new Touched(
+                            receiver,     // peer
+                            initiator,    // initiator
+                            ephKey,
+                            realKeyId
+                    );
+                    output.writeObject(touched);
+
+                    System.out.println("✅ New handshake created between " + initiator + " and " + receiver);
                 }
+            }
+
+
+
+            case "Touched" ->{
+                Touched tocado =  (Touched) packet;
+
+                String initiator = tocado.getInitiator();
+                String peer =  tocado.getPeer();
+                byte[] EKey = tocado.getEphKey();
+                int id = tocado.getKeyID();
+
+                DBConnect.PublishTouch(initiator, peer, EKey, id);
+                System.out.println("Touched Successfully");
+
+
             }
 
 

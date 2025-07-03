@@ -250,6 +250,7 @@ public class Main {
             PrivateKey finalX25519IdentityPriv1 = x25519IdentityPriv;
 
             String finalUsername = username;
+            String finalUsername1 = username;
             new Thread(() -> {
                 try {
                     while (true) {
@@ -291,20 +292,7 @@ public class Main {
                                 // 📌 Keep the bundle around for possible HandShake2Packet
                                 selectedPeerKeyBundleRef.set(kr);
 
-                                // 3️⃣ Consume the one-time key by its ID (this is already the local index)
-                                int otkId = kr.getOneTimeKeyID();
-                                List<KeyPair> oneTimeKPs = loadOneTimeKeyPairsEncrypted(pwd, uname + "_onetime_keys.enc");
-                                if (oneTimeKPs.isEmpty()) {
-                                    System.err.println("❌ No one-time keys left!");
-                                    break;
-                                }
-                                if (otkId < 1 || otkId > oneTimeKPs.size()) {
-                                    System.err.println("❌ Invalid one-time key ID: " + otkId);
-                                    break;
-                                }
-                                KeyPair usedOtk = oneTimeKPs.remove(otkId - 1);
-                                saveOneTimeKeysEncrypted(oneTimeKPs, pwd, uname + "_onetime_keys.enc");
-                                System.out.println("🔐 " + oneTimeKPs.size() + " one-time keys remain.");
+
 
                                 // 4️⃣ Perform the four DH operations for X3DH
                                 PublicKey theirX25519Id   = bytesToX25519Pub(kr.getX25519IdentityPub());
@@ -315,7 +303,7 @@ public class Main {
                                 byte[] dh1 = x25519(finalX25519IdentityPriv, theirX25519SPub);
                                 byte[] dh2 = x25519(ephKP.getPrivate(),        theirX25519Id);
                                 byte[] dh3 = x25519(ephKP.getPrivate(),        theirX25519SPub);
-                                byte[] dh4 = x25519(usedOtk.getPrivate(),      theirX25519OT);
+                                byte[] dh4 = x25519(ephKP.getPrivate(),      theirX25519OT);
 
                                 ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
                                 buf.put(dh1).put(dh2).put(dh3).put(dh4);
@@ -340,14 +328,9 @@ public class Main {
 
 
                                 peer = selectedPeerUsernameRef.get();
-                                // 5️⃣ Send handshake initiation to peer
-                                HandshakeInitPacket hip = new HandshakeInitPacket(
-                                        finalUsername,
-                                        peer,
-                                        dr.getDhPublic().getEncoded()
-                                );
-                                output.writeObject(PacketUtils.encryptPacketAES(hip, sessionKey, iv));
 
+                                Touched done = new Touched(finalUsername1, peer, ephKP.getPublic().getEncoded(), kr.getOneTimeKeyID());
+                                output.writeObject(done);
 
                                 // 7️⃣ Replay any buffered messages
                                 List<DirectMessagePacket> bufList = pendingMessages.remove(peerId);
