@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
+import java.util.Base64;
 
 /**
  * Double Ratchet State with ratchet steps, message key derivation,
@@ -87,8 +88,8 @@ public class DoubleRatchetState implements Serializable {
         byte[] dh = dhAgreement(newKP.getPrivate(), dhTheirPub);
         byte[] combined = hkdf(rootKey, dh, "Ratchet".getBytes(), 64);
         rootKey      = Arrays.copyOfRange(combined, 0, 32);
-        sendChainKey = Arrays.copyOfRange(combined, 32, 48);
-        recvChainKey = Arrays.copyOfRange(combined, 48, 64);
+        recvChainKey = Arrays.copyOfRange(combined, 32, 48);
+        sendChainKey = Arrays.copyOfRange(combined, 48, 64);
         this.dhPair = newKP;
     }
 
@@ -109,11 +110,14 @@ public class DoubleRatchetState implements Serializable {
     // at the top of DoubleRatchetState, if you haven’t already
     private static final byte PACKET_TYPE_RATCHET = 0x01;
 
+    String b64(byte[] x) { return Base64.getEncoder().encodeToString(x); }
+
     // ————————————————
 // 1) Encrypt a plaintext → Message
 // ————————————————
     public Message encrypt(byte[] plaintext) throws GeneralSecurityException {
         // derive the next send-message key
+        ratchetSend();
         byte[] mk = nextSendMessageKey();
         SecretKeySpec messageKey = new SecretKeySpec(mk, "AES");
 
@@ -128,7 +132,17 @@ public class DoubleRatchetState implements Serializable {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, messageKey, new GCMParameterSpec(128, iv));
         cipher.updateAAD(headerPub);
+
+        System.out.println("── encrypt side ──");
+        System.out.println(" headerPub = " + b64(headerPub));
+        System.out.println(" iv        = " + b64(iv));
+        System.out.println(" key       = " + b64(mk));
+        System.out.println(" plaintext = " + b64(plaintext));
+
+
         byte[] ciphertext = cipher.doFinal(plaintext);
+
+        System.out.println(" ciphertext= " + b64(ciphertext));
 
         return new Message(headerPub, iv, ciphertext);
     }
@@ -157,6 +171,14 @@ public class DoubleRatchetState implements Serializable {
         cipher.init(Cipher.DECRYPT_MODE, messageKey,
                 new GCMParameterSpec(128, env.iv));
         cipher.updateAAD(env.headerPub);
+
+        System.out.println("── decrypt side ──");
+        System.out.println(" headerPub = " + b64(env.headerPub));
+        System.out.println(" iv        = " + b64(env.iv));
+        System.out.println(" key       = " + b64(mk));
+        System.out.println(" ciphertext= " + b64(env.ciphertext));
+
+
         return cipher.doFinal(env.ciphertext);
     }
 

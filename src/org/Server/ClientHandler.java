@@ -58,7 +58,7 @@ public class ClientHandler implements Runnable {
 
             List<DirectMessagePacket> queued = DBConnect.getOfflineMessages(username);
             for (DirectMessagePacket p : queued) {
-                byte[] wrapped = PacketUtils.encryptPacketAES(p, sessionKey, iv);
+                byte[] wrapped = PacketUtils.encryptPacketAES(p, sessionKey);
                 output.writeObject(wrapped);
             }
             DBConnect.deleteOfflineMessages(username);
@@ -66,7 +66,7 @@ public class ClientHandler implements Runnable {
             // 3) Now all packets via AES
             while (true) {
                 byte[] raw = (byte[])input.readObject();
-                Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey, iv);
+                Packet pkt = PacketUtils.decryptPacketAES(raw, sessionKey);
 
                 handlePacket(pkt, output);
             }
@@ -101,7 +101,7 @@ public class ClientHandler implements Runnable {
                 InfoPacket info = new InfoPacket(dbResult);
 
                 // 3) AES‐encrypt it and send back to client
-                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey, iv);
+                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey);
                 output.writeObject(resp);
                 output.flush();
             }
@@ -110,7 +110,7 @@ public class ClientHandler implements Runnable {
                 this.username = lp.getUsername();
                 DBConnect.LoginPostResult res = DBConnect.LoginPOST(lp.getUsername(), lp.getPassword());
                 InfoPacket info = new InfoPacket(res.message);
-                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey, iv);
+                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey);
                 output.writeObject(resp);
                 output.flush();
                 if (!res.isSuccess()) return;
@@ -123,7 +123,7 @@ public class ClientHandler implements Runnable {
                 // send user list
                 List<String> online = DBConnect.getOnlineUsers();
                 UserListPacket ul = new UserListPacket(online);
-                byte[] listEnc = PacketUtils.encryptPacketAES(ul, sessionKey, iv);
+                byte[] listEnc = PacketUtils.encryptPacketAES(ul, sessionKey);
                 output.writeObject(listEnc);
                 output.flush();
 
@@ -143,17 +143,6 @@ public class ClientHandler implements Runnable {
                     System.out.println("✅ Stored one‐time key for “" + user + "” in DB.");
                 }
             }
-
-            case "Message" -> {
-                MessagePacket msg = (MessagePacket)packet;
-                eventListener.onClientAction("Message", username + ": " + msg.getMessage());
-                // ack
-                InfoPacket ack = new InfoPacket("Sent.");
-                byte[] resp = PacketUtils.encryptPacketAES(ack, sessionKey, iv);
-                output.writeObject(resp);
-                output.flush();
-            }
-
             case "UserListRequest" ->{
                 List<String> online = DBConnect.getOnlineUsers();
                 UserListPacket resp = new UserListPacket(online);
@@ -161,13 +150,10 @@ public class ClientHandler implements Runnable {
                 output.writeObject(resp);
                 output.flush();
             }
-
             case "DirectMessage" -> {
-                System.out.println("chegou cena");
                 DirectMessagePacket msg = (DirectMessagePacket) packet;
                 Socket destSock = Main.users.get(msg.getRecipient());
                 ClientHandler destHandler = Main.clientHandlers.get(destSock);
-                destHandler.output.writeObject(msg);
                 if (destHandler == null) {
                     // store for offline delivery
                      DBConnect.storeOfflineMessage(
@@ -179,105 +165,66 @@ public class ClientHandler implements Runnable {
                      );
                 break;
                 }
+                // AES-encrypt for that user's session:
+                byte[] wrapped = PacketUtils.encryptPacketAES(
+                        msg,
+                        destHandler.sessionKey
+                );
+                destHandler.output.writeObject(wrapped);
+                destHandler.output.flush();
             }
-
+            case "MadeHand" -> {
+                MadeHand mh = (MadeHand) packet;
+                boolean ok = DBConnect.storeMadeHand(mh);
+                if (!ok) {
+                    System.err.println("❌ Failed to store MadeHand for "
+                            + mh.getInitiator() + "↔" + mh.getPeer());
+                } else {
+                    System.out.println("✅ Stored MadeHand for "
+                            + mh.getInitiator() + "↔" + mh.getPeer());
+                }
+            }
 
             case "handshake" -> {
                 HandShakePacket handshake = (HandShakePacket) packet;
-                String initiator = handshake.getUsername(); // sender of the handshake
-                String receiver = handshake.getPerson();    // target
+                String initiator = handshake.getUsername();
+                String receiver  = handshake.getPerson();
 
-                // 1) Get the local one-time key bundle (we’ll send this back if handshake is new)
-                KeyBundle sendBundle = DBConnect.getUserKeyBundleLocal(receiver);
-                if (sendBundle == null) {
-                    System.err.println("❌ No KeyBundle for " + receiver);
+                // 1) grab the _local_ bundle (for slot+eph key)
+                KeyBundle localBundle = DBConnect.getUserKeyBundleLocal(receiver);
+                if (localBundle == null) {
+                    System.err.println("❌ No local KeyBundle for " + receiver);
                     break;
                 }
 
-                // 2) Get the actual real key ID
+                // 2) record real key‐ID
                 int realKeyId = DBConnect.getUserKeyBundle(receiver).getOneTimeKeyID();
+                String result = DBConnect.Touch(initiator, receiver, realKeyId);
 
-                // 3) Check if handshake already exists
-                HandshakeRecord record = DBConnect.getHandshakeRecord(initiator, receiver);
-                if (record != null) {
-                    // Handshake exists → Send Touched packet from the DB
-                    System.out.println("🔁 Handshake already exists for " + initiator + "↔" + receiver);
-
-                    String peer = record.getInitiator().equals(initiator)
-                            ? record.getReceiver()
-                            : record.getInitiator();
-
-                    Touched touched = new Touched(
-                            peer,
-                            initiator,
-                            record.getEphemeralKey(),
-                            record.getKeyID()
-                    );
-                    output.writeObject(touched);
-
+                if ("Added".equals(result)) {
+                    // new handshake → send full bundle and consume the real key
+                    output.writeObject(localBundle);
+                    DBConnect.deleteOneTimeKey(receiver, localBundle.getOneTimeKey());
                 } else {
-                    // ❗ Handshake does not exist → insert and respond with Touched
+                    // already exists → fetch peer's identity & signing pubs
+                    System.out.println("🔁 Handshake exists for "
+                            + initiator + "↔" + receiver);
 
-                    // Use realKeyId and bundle's ephemeral key
-                    byte[] ephKey = sendBundle.getOneTimeKey();
+                    KeyBundle peerBundle = DBConnect.getUserKeyBundle(receiver);
 
-                    DBConnect.PublishTouch(initiator, receiver, ephKey, realKeyId);
-                    DBConnect.deleteOneTimeKey(receiver, sendBundle.getOneTimeKey());
-
-                    Touched touched = new Touched(
-                            receiver,     // peer
-                            initiator,    // initiator
-                            ephKey,
-                            realKeyId
+                    MadeHand initiatorBundle = DBConnect.getMadeHandBundle(initiator, receiver);
+                    HandShakeAlreadyMade cena = new HandShakeAlreadyMade(
+                            initiator,
+                            receiver,
+                            initiatorBundle.getKeyId(),   // A's one-time key slot
+                            initiatorBundle.getEphKey(),     // A's ephemeral key bytes
+                            initiatorBundle.getInitiatorIdentityPub(), // A's identity pub
+                            initiatorBundle.getInitiatorSigningPub()   // A's signed-prekey pub
                     );
-                    output.writeObject(touched);
-
-                    System.out.println("✅ New handshake created between " + initiator + " and " + receiver);
+                    output.writeObject(cena);
                 }
             }
 
-
-
-            case "Touched" ->{
-                Touched tocado =  (Touched) packet;
-
-                String initiator = tocado.getInitiator();
-                String peer =  tocado.getPeer();
-                byte[] EKey = tocado.getEphKey();
-                int id = tocado.getKeyID();
-
-                DBConnect.PublishTouch(initiator, peer, EKey, id);
-                System.out.println("Touched Successfully");
-
-
-            }
-
-
-
-
-
-            case "AESAnswer" ->{
-
-                AESAnswer c = (AESAnswer)packet;
-
-                Socket s = Main.users.get(c.getRecipient());
-                ClientHandler a = Main.clientHandlers.get(s);
-                byte[] wrapped = PacketUtils.encryptPacketAES(c, a.sessionKey, a.iv);
-                a.output.writeObject(wrapped);
-                a.output.flush();
-            }
-            case "AESFinal" ->{
-
-                AESFinal fin = (AESFinal)packet;
-
-                Socket s = Main.users.get(fin.getRecipient());
-                ClientHandler a = Main.clientHandlers.get(s);
-
-                byte[] wrapped = PacketUtils.encryptPacketAES(fin, a.sessionKey, a.iv);
-                a.output.writeObject(wrapped);
-                a.output.flush();
-
-            }
             case "BundleRequest" -> {
                 BundleRequestPacket bp = (BundleRequestPacket)packet;
                 String who = bp.getReceiver();
@@ -312,7 +259,7 @@ public class ClientHandler implements Runnable {
             }
             default -> {
                 InfoPacket unk = new InfoPacket("Unknown packet.");
-                byte[] resp = PacketUtils.encryptPacketAES(unk, sessionKey, iv);
+                byte[] resp = PacketUtils.encryptPacketAES(unk, sessionKey);
                 output.writeObject(resp);
                 output.flush();
             }

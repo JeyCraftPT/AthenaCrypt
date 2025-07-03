@@ -27,7 +27,7 @@ public class PacketUtils {
     }
 
     // AES-encrypt any Packet after handshake
-    public static byte[] encryptPacketAES(Packet pkt, SecretKey aesKey, byte[] iv) throws Exception {
+    public static byte[] encryptPacketAES(Packet pkt, SecretKey aesKey) throws Exception {
         // 1) serialize
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
@@ -35,17 +35,32 @@ public class PacketUtils {
         }
         byte[] plain = baos.toByteArray();
 
-        // 2) AES/CBC/PKCS5Padding
+        // 2) AES/CBC/PKCS5Padding with random IV
         Cipher aes = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        byte[] iv = new byte[16];
+        new java.security.SecureRandom().nextBytes(iv);
         aes.init(Cipher.ENCRYPT_MODE, aesKey, new IvParameterSpec(iv));
-        return aes.doFinal(plain);
+        byte[] ciphertext = aes.doFinal(plain);
+
+        // 3) Prepend IV to ciphertext
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(iv);
+        out.write(ciphertext);
+        return out.toByteArray();
     }
 
     // AES-decrypt any Packet after handshake
-    public static Packet decryptPacketAES(byte[] blob, SecretKey aesKey, byte[] iv) throws Exception {
+    public static Packet decryptPacketAES(byte[] blob, SecretKey aesKey) throws Exception {
+        // 1) Extract IV (first 16 bytes)
+        byte[] iv = new byte[16];
+        System.arraycopy(blob, 0, iv, 0, 16);
+        byte[] ciphertext = new byte[blob.length - 16];
+        System.arraycopy(blob, 16, ciphertext, 0, ciphertext.length);
+
+        // 2) Decrypt
         Cipher aes = Cipher.getInstance("AES/CBC/PKCS5Padding");
         aes.init(Cipher.DECRYPT_MODE, aesKey, new IvParameterSpec(iv));
-        byte[] plain = aes.doFinal(blob);
+        byte[] plain = aes.doFinal(ciphertext);
 
         try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(plain))) {
             return (Packet) ois.readObject();

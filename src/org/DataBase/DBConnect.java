@@ -1,8 +1,8 @@
 package org.DataBase;
 
 import org.Packets.DirectMessagePacket;
-import org.Packets.HandshakeRecord;
 import org.Packets.KeyBundle;
+import org.Packets.MadeHand;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -402,8 +402,8 @@ public class DBConnect {
 
     public static String Touch(
             String initiator,
-            String receiver
-
+            String receiver,
+            int    keyId
     ) throws SQLException {
         String selectSQL =
                 "SELECT id "
@@ -431,90 +431,53 @@ public class DBConnect {
                 }
             }
 
+            try (PreparedStatement psInsert = conn.prepareStatement(insertSQL, Statement.RETURN_GENERATED_KEYS)) {
+                psInsert.setString(1, initiator);
+                psInsert.setString(2, receiver);
+                psInsert.setInt   (3, keyId);       // ← new parameter
+                int rows = psInsert.executeUpdate();
+
+                if (rows == 0) {
+                    return null;
+                }
+                try (ResultSet genKeys = psInsert.getGeneratedKeys()) {
+                    if (genKeys.next()) {
+                        return "Added";
+                    } else {
+                        return null;
+                    }
+                }
+            }
         }
         catch (SQLException e) {
             e.printStackTrace();
             return null;
         }
-        return selectSQL;
     }
 
+    public static boolean storeMadeHand(MadeHand mh) throws SQLException {
+        // 0) figure out whose key it really is and what's the real key_ID
+        int clientId    = getClientIdByName(mh.getPeer());
+        int realKeyId   = getKeyIdByLocalIndex(clientId, mh.getKeyId());
 
-
-    public static HandshakeRecord getHandshakeRecord(String user1, String user2) {
-        String sql = """
-        SELECT initiator, receiver, ephemeral_Key, key_id
-        FROM handShake
-        WHERE (initiator = ? AND receiver = ?)
-           OR (initiator = ? AND receiver = ?)
-        LIMIT 1
-        """;
-
+        // 1) now insert using the true DB key_ID
+        String insertSQL =
+                "INSERT INTO handShake (initiator, receiver, key_id, ephemeral_key) " +
+                        "VALUES (?, ?, ?, ?)";
         try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, user1);
-            stmt.setString(2, user2);
-            stmt.setString(3, user2);
-            stmt.setString(4, user1);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return new HandshakeRecord(
-                            rs.getString("initiator"),
-                            rs.getString("receiver"),
-                            rs.getBytes("ephemeral_Key"),
-                            rs.getInt("key_id")
-                    );
-                }
-            }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-
-        return null;
-    }
-
-    public static void PublishTouch(String initiator, String peer, byte[] EKey, int id) {
-        String selectSQL = """
-        SELECT id FROM handShake
-        WHERE (initiator = ? AND receiver = ?)
-           OR (initiator = ? AND receiver = ?)
-        LIMIT 1
-        """;
-
-        String insertSQL = """
-        INSERT INTO handShake (initiator, receiver, ephemeral_Key, key_id)
-        VALUES (?, ?, ?, ?)
-        """;
-
-        try (Connection conn = getConnection();
-             PreparedStatement psSelect = conn.prepareStatement(selectSQL)) {
-
-            psSelect.setString(1, initiator);
-            psSelect.setString(2, peer);
-            psSelect.setString(3, peer);
-            psSelect.setString(4, initiator);
-
-            try (ResultSet rs = psSelect.executeQuery()) {
-                if (rs.next()) {
-                    // already exists — do not insert
-                    return;
-                }
-            }
-
-            try (PreparedStatement psInsert = conn.prepareStatement(insertSQL)) {
-                psInsert.setString(1, initiator);
-                psInsert.setString(2, peer);
-                psInsert.setBytes(3, EKey);
-                psInsert.setInt(4, id);
-                psInsert.executeUpdate();
-            }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
+             PreparedStatement ps = conn.prepareStatement(insertSQL)) {
+            ps.setString(1, mh.getInitiator());
+            ps.setString(2, mh.getPeer());
+            ps.setInt   (3, realKeyId);
+            ps.setBytes (4, mh.getEphKey());
+            return ps.executeUpdate() > 0;
+        } catch (SQLIntegrityConstraintViolationException dup) {
+            // row already exists
+            return false;
         }
     }
+
+
 
 
     /** Returns the key_id for an existing handshake between these two users. */
@@ -647,6 +610,44 @@ public class DBConnect {
             return "Deleted " + rows;
         }
     }
+
+    /**
+     * Fetches the original handshake record (initiator’s ephemeral + key-ID +
+     * initiator’s X25519 identity & signed-prekey) for the given two parties,
+     * regardless of order.
+     */
+    public static MadeHand getMadeHandBundle(String initiator, String receiver) throws SQLException {
+        String sql =
+                "SELECT h.key_id, h.ephemeral_key, " +
+                        "       c.client_x25519IdentityKey AS idPub, " +
+                        "       c.client_SPKey               AS spPub " +
+                        "  FROM handShake h " +
+                        "  JOIN client   c ON c.client_name = h.initiator " +
+                        " WHERE (h.initiator = ? AND h.receiver = ?) " +
+                        "    OR (h.initiator = ? AND h.receiver = ?) " +
+                        " LIMIT 1";
+
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, initiator);
+            ps.setString(2, receiver);
+            ps.setString(3, receiver);
+            ps.setString(4, initiator);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+
+                int keyId       = rs.getInt("key_id");
+                byte[] ephKey   = rs.getBytes("ephemeral_key");
+                byte[] idPub    = rs.getBytes("idPub");
+                byte[] spPub    = rs.getBytes("spPub");
+
+                // MadeHand constructor should match these parameters:
+                return new MadeHand(initiator, receiver, keyId, ephKey, idPub, spPub);
+            }
+        }
+    }
+
 
 
 }
