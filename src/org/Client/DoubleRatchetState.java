@@ -74,8 +74,8 @@ public class DoubleRatchetState implements Serializable {
         byte[] dh = dhAgreement(dhPair.getPrivate(), theirNewPub);
         byte[] combined = hkdf(rootKey, dh, "Ratchet".getBytes(), 64);
         rootKey      = Arrays.copyOfRange(combined, 0, 32);
-        recvChainKey = Arrays.copyOfRange(combined, 32, 48);
-        sendChainKey = Arrays.copyOfRange(combined, 48, 64);
+        recvChainKey = Arrays.copyOfRange(combined, 48, 64);
+        sendChainKey = Arrays.copyOfRange(combined, 32, 48);
         this.dhTheirPub = theirNewPub;
     }
 
@@ -117,7 +117,7 @@ public class DoubleRatchetState implements Serializable {
 // ————————————————
     public Message encrypt(byte[] plaintext) throws GeneralSecurityException {
         // derive the next send-message key
-        ratchetSend();
+        //ratchetSend();
         byte[] mk = nextSendMessageKey();
         SecretKeySpec messageKey = new SecretKeySpec(mk, "AES");
 

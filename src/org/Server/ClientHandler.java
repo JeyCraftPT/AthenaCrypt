@@ -190,40 +190,82 @@ public class ClientHandler implements Runnable {
                 String initiator = handshake.getUsername();
                 String receiver  = handshake.getPerson();
 
-                // 1) grab the _local_ bundle (for slot+eph key)
+                // 1) grab the local bundle (has your slot + eph pub)
                 KeyBundle localBundle = DBConnect.getUserKeyBundleLocal(receiver);
                 if (localBundle == null) {
                     System.err.println("❌ No local KeyBundle for " + receiver);
                     break;
                 }
 
-                // 2) record real key‐ID
-                int realKeyId = DBConnect.getUserKeyBundle(receiver).getOneTimeKeyID();
-                String result = DBConnect.Touch(initiator, receiver, realKeyId);
+                // 2) find the global oneTimeKeys.key_id
+                int globalKeyId = DBConnect.getUserKeyBundle(receiver).getOneTimeKeyID();
+                String result   = DBConnect.Touch(initiator, receiver, globalKeyId);
 
                 if ("Added".equals(result)) {
-                    // new handshake → send full bundle and consume the real key
+                    // ─── A) send the bundle to the client ───────────────────────────
                     output.writeObject(localBundle);
-                    DBConnect.deleteOneTimeKey(receiver, localBundle.getOneTimeKey());
-                } else {
-                    // already exists → fetch peer's identity & signing pubs
-                    System.out.println("🔁 Handshake exists for "
-                            + initiator + "↔" + receiver);
 
-                    KeyBundle peerBundle = DBConnect.getUserKeyBundle(receiver);
-
-                    MadeHand initiatorBundle = DBConnect.getMadeHandBundle(initiator, receiver);
-                    HandShakeAlreadyMade cena = new HandShakeAlreadyMade(
+                    // ─── B) persist the same globalKeyId + ephKey *before* deleting ──
+                    MadeHand mh = new MadeHand(
                             initiator,
                             receiver,
-                            initiatorBundle.getKeyId(),   // A's one-time key slot
-                            initiatorBundle.getEphKey(),     // A's ephemeral key bytes
-                            initiatorBundle.getInitiatorIdentityPub(), // A's identity pub
-                            initiatorBundle.getInitiatorSigningPub()   // A's signed-prekey pub
+                            globalKeyId,                    // ← the real key_id
+                            localBundle.getOneTimeKey(),    // ← exactly what you just sent
+                            localBundle.getX25519IdentityPub(),
+                            localBundle.getX25519SigningPub()
                     );
-                    output.writeObject(cena);
+                    try {
+                        DBConnect.storeMadeHand(mh);
+                    } catch (SQLException e) {
+                        System.err.println("⚠️ Couldn’t store MadeHand: " + e.getMessage());
+                    }
+
+                    // ─── C) now consume the one-time-key so it can’t be re-used ─────
+                    String del = DBConnect.deleteOneTimeKey(
+                            receiver,
+                            localBundle.getOneTimeKey()
+                    );
+                    if (!"OK".equals(del)) {
+                        System.err.println("⚠️ Failed to delete one-time key: " + del);
+                    }
+
+                } else {
+                    System.out.println("🔁 Handshake exists for " + initiator + "↔" + receiver + " (or vice-versa)");
+                    try {
+                        // first try the "natural" direction
+                        MadeHand stored = DBConnect.getMadeHandBundle(initiator, receiver);
+                        boolean swapped = false;
+
+                        // if that returns null, try the flipped direction
+                        if (stored == null) {
+                            stored = DBConnect.getMadeHandBundle(receiver, initiator);
+                            swapped = true;
+                        }
+
+                        if (stored == null) {
+                            System.err.println("⚠️ No stored MadeHand in either direction; falling back to full bundle");
+                            output.writeObject(localBundle);
+                        } else {
+                            // restore original roles
+                            String origInitiator = swapped ? receiver  : initiator;
+                            String origReceiver  = swapped ? initiator : receiver;
+                            output.writeObject(new HandShakeAlreadyMade(
+                                    origInitiator,
+                                    origReceiver,
+                                    stored.getKeyId(),
+                                    stored.getEphKey(),
+                                    stored.getInitiatorIdentityPub(),
+                                    stored.getInitiatorSigningPub()
+                            ));
+                        }
+                    } catch (SQLException e) {
+                        System.err.println("❌ DB error fetching MadeHand: " + e.getMessage());
+                        output.writeObject(localBundle);
+                    }
                 }
             }
+
+
 
             case "BundleRequest" -> {
                 BundleRequestPacket bp = (BundleRequestPacket)packet;

@@ -409,7 +409,6 @@ public class DBConnect {
                 "SELECT id "
                         + "FROM handShake "
                         + "WHERE (initiator = ? AND receiver = ?) "
-                        + "   OR (initiator = ? AND receiver = ?) "
                         + "LIMIT 1";
         // note: now inserting key_id as the 3rd column
         String insertSQL =
@@ -419,10 +418,8 @@ public class DBConnect {
         try (Connection conn = getConnection();
              PreparedStatement psSelect = conn.prepareStatement(selectSQL)) {
 
-            psSelect.setString(1, initiator);
-            psSelect.setString(2, receiver);
-            psSelect.setString(3, receiver);
-            psSelect.setString(4, initiator);
+            psSelect.setString(1, receiver);
+            psSelect.setString(2, initiator);
 
             try (ResultSet rs = psSelect.executeQuery()) {
                 if (rs.next()) {
@@ -456,27 +453,51 @@ public class DBConnect {
     }
 
     public static boolean storeMadeHand(MadeHand mh) throws SQLException {
-        // 0) figure out whose key it really is and what's the real key_ID
-        int clientId    = getClientIdByName(mh.getPeer());
-        int realKeyId   = getKeyIdByLocalIndex(clientId, mh.getKeyId());
+        // figure out whether mh.getKeyId() is a slot-index or already the real key_id
+        int clientId = getClientIdByName(mh.getInitiator());
+        int raw      = mh.getKeyId();
 
-        // 1) now insert using the true DB key_ID
-        String insertSQL =
-                "INSERT INTO handShake (initiator, receiver, key_id, ephemeral_key) " +
-                        "VALUES (?, ?, ?, ?)";
+        // how many slots do they currently have?
+        int count;
+        try (Connection c = getConnection();
+             PreparedStatement p = c.prepareStatement(
+                     "SELECT COUNT(*) AS cnt FROM oneTimeKeys WHERE client_id = ?")) {
+            p.setInt(1, clientId);
+            try (ResultSet r = p.executeQuery()) {
+                r.next();
+                count = r.getInt("cnt");
+            }
+        }
+
+        final int globalKeyId;
+        if (raw >= 1 && raw <= count) {
+            // it was a slot-index → translate to the real PK
+            globalKeyId = getKeyIdByLocalIndex(clientId, raw);
+        } else {
+            // otherwise assume they already sent the real key_id
+            globalKeyId = raw;
+        }
+
+        // now insert the full MadeHand (including all three key blobs)
+        String sql = """
+      INSERT INTO handShake
+        (initiator, receiver, key_id,
+         ephemeral_Key,
+         initiatorIdentityPub,
+         initiatorSigningPub)
+      VALUES (?,?,?,?,?,?)
+      """;
         try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(insertSQL)) {
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, mh.getInitiator());
             ps.setString(2, mh.getPeer());
-            ps.setInt   (3, realKeyId);
+            ps.setInt   (3, globalKeyId);
             ps.setBytes (4, mh.getEphKey());
-            return ps.executeUpdate() > 0;
-        } catch (SQLIntegrityConstraintViolationException dup) {
-            // row already exists
-            return false;
+            ps.setBytes (5, mh.getInitiatorIdentityPub());
+            ps.setBytes (6, mh.getInitiatorSigningPub());
+            return ps.executeUpdate() == 1;
         }
     }
-
 
 
 
@@ -611,42 +632,43 @@ public class DBConnect {
         }
     }
 
-    /**
-     * Fetches the original handshake record (initiator’s ephemeral + key-ID +
-     * initiator’s X25519 identity & signed-prekey) for the given two parties,
-     * regardless of order.
-     */
-    public static MadeHand getMadeHandBundle(String initiator, String receiver) throws SQLException {
-        String sql =
-                "SELECT h.key_id, h.ephemeral_key, " +
-                        "       c.client_x25519IdentityKey AS idPub, " +
-                        "       c.client_SPKey               AS spPub " +
-                        "  FROM handShake h " +
-                        "  JOIN client   c ON c.client_name = h.initiator " +
-                        " WHERE (h.initiator = ? AND h.receiver = ?) " +
-                        "    OR (h.initiator = ? AND h.receiver = ?) " +
-                        " LIMIT 1";
+    public static MadeHand getMadeHandBundle(String initiator, String receiver)
+            throws SQLException
+    {
+        String sql = """
+      SELECT
+        key_id,
+        ephemeral_Key,
+        initiatorIdentityPub,
+        initiatorSigningPub
+      FROM handShake
+      WHERE initiator = ? AND receiver = ?
+      """;
 
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (Connection c = getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, initiator);
             ps.setString(2, receiver);
-            ps.setString(3, receiver);
-            ps.setString(4, initiator);
-
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
 
-                int keyId       = rs.getInt("key_id");
-                byte[] ephKey   = rs.getBytes("ephemeral_key");
-                byte[] idPub    = rs.getBytes("idPub");
-                byte[] spPub    = rs.getBytes("spPub");
+                int    keyId   = rs.getInt   ("key_id");
+                byte[] eph     = rs.getBytes ("ephemeral_Key");
+                byte[] idPub   = rs.getBytes ("initiatorIdentityPub");
+                byte[] signPub = rs.getBytes ("initiatorSigningPub");
 
-                // MadeHand constructor should match these parameters:
-                return new MadeHand(initiator, receiver, keyId, ephKey, idPub, spPub);
+                return new MadeHand(
+                        initiator,
+                        receiver,
+                        keyId,
+                        eph,
+                        idPub,
+                        signPub
+                );
             }
         }
     }
+
 
 
 

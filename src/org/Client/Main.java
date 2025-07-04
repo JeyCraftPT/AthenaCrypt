@@ -57,6 +57,10 @@ public class Main {
             PublicKey  x25519IdentityPub  = null;
 
 
+            final AtomicReference<KeyPair>  userIKPRef                  = new AtomicReference<>();
+            final AtomicReference<KeyPair>  userSPKPRef                 = new AtomicReference<>();
+
+
 
             // for selecting peers
 
@@ -216,18 +220,30 @@ public class Main {
                 System.out.println("🔑 Loaded private key.");
                 userPriv = priv;
 
-                // ← NEW: load X25519 private key
+                // ← NEW: load X25519 identity keypair
                 x25519IdentityPriv = loadX25519PrivateKey(p, u + "_x25519_identity_key.enc");
-                System.out.println("🔑 Loaded X25519 identity key.");
+                byte[] idPubBytes = Files.readAllBytes(Paths.get(u + "_x25519_identity_pub.enc"));
+                x25519IdentityPub = KeyFactory
+                        .getInstance("X25519")
+                        .generatePublic(new X509EncodedKeySpec(idPubBytes));
+                System.out.println("🔑 Loaded X25519 identity keypair.");
+
+                // Wire it into the KeyBundle handler:
+                KeyPair identityKP = new KeyPair(x25519IdentityPub, x25519IdentityPriv);
+                userIKPRef.set(identityKP);
 
                 // ← ALSO load the signed-pre-key pair
                 PrivateKey x25519Spriv = loadX25519PrivateKey(p, u + "_x25519_sprv_key.enc");
                 byte[] spubBytes = Files.readAllBytes(Paths.get(u + "_x25519_sprv_pub.enc"));
-                PublicKey  x25519Spub = KeyFactory
+                PublicKey x25519Spub = KeyFactory
                         .getInstance("X25519")
                         .generatePublic(new X509EncodedKeySpec(spubBytes));
                 userSPKP = new KeyPair(x25519Spub, x25519Spriv);
                 System.out.println("🔑 Loaded X25519 signed-pre-key pair.");
+
+                // Wire that in, too:
+                userSPKPRef.set(userSPKP);
+
 
                 // send LoginPacket
                 LoginPacket login = new LoginPacket(u, p);
@@ -255,6 +271,9 @@ public class Main {
                         .getInstance("X25519")
                         .generatePublic(new X509EncodedKeySpec(pubBytes));
                 System.out.println("🔑 Loaded X25519 identity keypair.");
+                // assign identity keypair for ratchet
+                userIKP = new KeyPair(x25519IdentityPub, x25519IdentityPriv);
+
                 username = u;
                 userPass = p;
                 userPriv  = priv;
@@ -272,8 +291,6 @@ public class Main {
             String finalUsername = username;
             String finalUsername1 = username;
             PublicKey finalX25519IdentityPub = x25519IdentityPub;
-            final AtomicReference<KeyPair> userIKPRef = new AtomicReference<>(userIKP);
-            final AtomicReference<KeyPair> userSPKPRef = new AtomicReference<>(userSPKP);
             new Thread(() -> {
                 try {
                     while (true) {
@@ -309,45 +326,53 @@ public class Main {
                                 }
                                 System.out.println("✅ SignedPreKey valid.");
 
-                                // 2️⃣ Store their identity pub for indexing & potential handshake-2
+                                // 2️⃣ Store their identity pub for later
                                 selectedPeerIdPubBytesRef.set(kr.getX25519IdentityPub());
                                 selectedPeerKeyBundleRef.set(kr);
 
-                                // 3️⃣ Consume our one-time key
-                                int otkId = kr.getOneTimeKeyID();
+                                // 3️⃣ Consume our one‐time key by mapping global→local via floorMod
+                                int globalOtkId = kr.getOneTimeKeyID();
                                 List<KeyPair> oneTimeKPs = loadOneTimeKeyPairsEncrypted(pwd, uname + "_onetime_keys.enc");
-                                if (otkId < 1 || otkId > oneTimeKPs.size()) {
-                                    System.err.println("❌ Invalid one-time key ID: " + otkId);
+                                int batchSize = oneTimeKPs.size();
+                                int localIndex = Math.floorMod(globalOtkId - 1, batchSize);
+                                if (localIndex < 0 || localIndex >= batchSize) {
+                                    System.err.println("❌ Invalid one-time key slot: global=" + globalOtkId);
                                     break;
                                 }
-                                KeyPair usedOtk = oneTimeKPs.remove(otkId - 1);
+                                KeyPair usedOtk = oneTimeKPs.remove(localIndex);
                                 saveOneTimeKeysEncrypted(oneTimeKPs, pwd, uname + "_onetime_keys.enc");
-                                System.out.println("🔐 " + oneTimeKPs.size() + " one-time keys remain.");
+                                System.out.println(String.format(
+                                        "🔐 Used key #%d (global #%d); %d one-time keys remain.",
+                                        localIndex + 1, globalOtkId, oneTimeKPs.size()
+                                ));
 
-                                // 4️⃣ X3DH DHs
+                                // 4️⃣ Reconstruct peer’s three public keys
                                 PublicKey theirIdPub   = bytesToX25519Pub(kr.getX25519IdentityPub());
                                 PublicKey theirSPub    = bytesToX25519Pub(kr.getX25519SigningPub());
                                 PublicKey theirOneTime = bytesToX25519Pub(kr.getOneTimeKey());
 
+                                // 5️⃣ Perform X3DH: EKA, IK_A, SPK_A, OTK_B ephemerals
                                 KeyPair ephKP = KeyPairGenerator.getInstance("X25519").generateKeyPair();
-                                byte[] dh1 = x25519(finalX25519IdentityPriv, theirSPub);
-                                byte[] dh2 = x25519(ephKP.getPrivate(),       theirIdPub);
-                                byte[] dh3 = x25519(ephKP.getPrivate(),       theirSPub);
-                                byte[] dh4 = x25519(usedOtk.getPrivate(),     theirOneTime);
+                                byte[] dh1 = x25519(finalX25519IdentityPriv, theirSPub);      // IK_B × SPK_A
+                                byte[] dh2 = x25519(ephKP.getPrivate(),        theirIdPub);   // EKA   × IK_A
+                                byte[] dh3 = x25519(ephKP.getPrivate(),        theirSPub);    // EKA   × SPK_A
+                                byte[] dh4 = x25519(ephKP.getPrivate(),        theirOneTime); // EKA   × OTK_A
+
+                                // ─── Build the 4-DH masterSecret ────────────────────────────────────────
                                 ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
                                 buf.put(dh1).put(dh2).put(dh3).put(dh4);
                                 byte[] masterSecret = buf.array();
 
-                                // 5️⃣ HKDF to root + chain keys
+                                // 6️⃣ HKDF → rootKey, sendCK, recvCK
                                 byte[] rootKey = hkdf(new byte[32], masterSecret, "X3DH".getBytes(UTF_8), 32);
                                 byte[] sendCK  = hkdfExpand(rootKey, "send".getBytes(UTF_8), 32);
                                 byte[] recvCK  = hkdfExpand(rootKey, "recv".getBytes(UTF_8), 32);
 
-                                // 6️⃣ Init Double Ratchet
+                                // 7️⃣ Initialize the Double Ratchet (initiator order)
                                 DoubleRatchetState dr = new DoubleRatchetState(
                                         rootKey,
                                         ephKP,
-                                        theirSPub,
+                                        theirOneTime, // use peer’s ephemeral here
                                         sendCK,
                                         recvCK
                                 );
@@ -355,26 +380,25 @@ public class Main {
                                 sessionStore.put(peerId, dr);
                                 System.out.println("✅ Double Ratchet initialized for " + peer);
 
-                                // 7️⃣ Send MadeHand with *your* public key material
-                                KeyPair userIKPCurrent = userIKPRef.get();
+                                // 8️⃣ Send back a MadeHand with the GLOBAL OTK ID
+                                KeyPair userIKPCurrent  = userIKPRef.get();
                                 KeyPair userSPKPCurrent = userSPKPRef.get();
                                 if (userIKPCurrent == null || userSPKPCurrent == null) {
-                                    System.err.println("User keypairs are not loaded! userIKP=" + userIKPCurrent + ", userSPKP=" + userSPKPCurrent);
+                                    System.err.println("❌ User keypairs not loaded!");
                                     throw new IllegalStateException("User keypairs are not loaded!");
                                 }
                                 MadeHand mh = new MadeHand(
-                                        finalUsername,                                 // initiator username
-                                        peer,                                         // receiver username
-                                        otkId,                                        // one-time key slot
-                                        ephKP.getPublic().getEncoded(),               // YOUR ephemeral public key
-                                        userIKPCurrent.getPublic().getEncoded(),               // YOUR identity public key
-                                        userSPKPCurrent.getPublic().getEncoded()               // YOUR signed-prekey public key
+                                        finalUsername,                  // initiator username
+                                        peer,                           // receiver username
+                                        globalOtkId,                    // global one-time-key ID
+                                        ephKP.getPublic().getEncoded(), // YOUR ephemeral public key
+                                        userIKPCurrent.getPublic().getEncoded(),  // YOUR identity public key
+                                        userSPKPCurrent.getPublic().getEncoded()  // YOUR signed-prekey public key
                                 );
-
                                 output.writeObject(PacketUtils.encryptPacketAES(mh, sessionKey));
                                 output.flush();
 
-                                // 8️⃣ Replay any buffered messages
+                                // 9️⃣ Replay any buffered messages
                                 List<DirectMessagePacket> bufList = pendingMessages.remove(peerId);
                                 if (bufList != null) {
                                     for (DirectMessagePacket old : bufList) {
@@ -386,6 +410,7 @@ public class Main {
                                     }
                                 }
                             }
+
 
 
                             case "HandShake2Packet" -> {
@@ -470,46 +495,71 @@ public class Main {
                                 selectedPeerIdPubBytesRef.set(hsam.getPeerIdentityPub());
 
                                 // 2️⃣ Consume our one-time X25519 keypair
-                                int otkId = hsam.getKeyId();
+                                int globalOtkId = hsam.getKeyId();
                                 List<KeyPair> oneTimeKPs = loadOneTimeKeyPairsEncrypted(pwd, uname + "_onetime_keys.enc");
-                                if (otkId < 1 || otkId > oneTimeKPs.size()) {
-                                    System.err.println("❌ Invalid one-time key ID: " + otkId);
+                                int batchSize    = oneTimeKPs.size();
+
+                                // fold the global ID into [0..batchSize-1]
+                                int localIndex = Math.floorMod(globalOtkId - 1, batchSize);
+
+                                // sanity check (should never fail with floorMod)
+                                if (localIndex < 0 || localIndex >= batchSize) {
+                                    System.err.println("❌ Computed local key index out of range: " + localIndex);
                                     break;
                                 }
-                                KeyPair myEphKP = oneTimeKPs.remove(otkId - 1);
+
+                                KeyPair myEphKP = oneTimeKPs.remove(localIndex);
                                 saveOneTimeKeysEncrypted(oneTimeKPs, pwd, uname + "_onetime_keys.enc");
+
+                                int localId = localIndex + 1;
+                                System.out.println(String.format(
+                                        "🔐 Used key #%d (global #%d); %d one-time keys remain.",
+                                        localId, globalOtkId, oneTimeKPs.size()
+                                ));
+
                                 System.out.println("🔐 " + oneTimeKPs.size() + " one-time keys remain.");
 
-                                // 3️⃣ Reconstruct the initiator's ephemeral pubkey (A_eph)
-                                byte[] theirEphBytes = hsam.getOneTimeKey();
-                                PublicKey theirEphPub = bytesToX25519Pub(theirEphBytes);
+                                // 3️⃣ Reconstruct public keys from the packet
+                                PublicKey theirIdPub  = bytesToX25519Pub(hsam.getPeerIdentityPub()); // IK_A
+                                PublicKey theirSpub   = bytesToX25519Pub(hsam.getPeerSigningPub());  // SPK_A
+                                PublicKey theirEphPub = bytesToX25519Pub(hsam.getOneTimeKey());      // EK_A
 
-                                // 4️⃣ Fetch their identity & signed-prekey for X3DH
-                                PublicKey theirIdPub  = bytesToX25519Pub(hsam.getPeerIdentityPub());
-                                PublicKey theirSPub   = bytesToX25519Pub(hsam.getPeerSigningPub());
+                                // 4️⃣ Grab B's own keypairs:
+                                KeyPair  spkpPair = userSPKPRef.get();       // SPK_B
+                                PrivateKey spkB   = spkpPair.getPrivate();
+                                PrivateKey ikB    = finalX25519IdentityPriv; // IK_B
+                                PrivateKey otkB   = myEphKP.getPrivate();    // OTK_B
 
-                                // 5️⃣ Do the four X25519 DHs as before
-                                byte[] dh1 = x25519(finalX25519IdentityPriv, theirSPub);
-                                byte[] dh2 = x25519(myEphKP.getPrivate(),      theirIdPub);
-                                byte[] dh3 = x25519(myEphKP.getPrivate(),      theirSPub);
-                                byte[] dh4 = x25519(myEphKP.getPrivate(),      theirEphPub);
-                                ByteBuffer buf = ByteBuffer.allocate(dh1.length + dh2.length + dh3.length + dh4.length);
+                                // 5️⃣ Now do *B’s* four DHs in the spec order:
+                                byte[] dh1 = x25519(spkB,    theirIdPub);    // SPK_B priv  vs IK_A pub
+                                byte[] dh2 = x25519(ikB,     theirEphPub);   // IK_B priv   vs EK_A pub
+                                byte[] dh3 = x25519(spkB,    theirEphPub);   // SPK_B priv  vs EK_A pub
+                                byte[] dh4 = x25519(otkB,    theirEphPub);   // OTK_B priv  vs EK_A pub
+
+                                // ─── Build the masterSecret ────────────────────────────────────────────────
+                                ByteBuffer buf = ByteBuffer.allocate(
+                                        dh1.length + dh2.length + dh3.length + dh4.length
+                                );
                                 buf.put(dh1).put(dh2).put(dh3).put(dh4);
                                 byte[] masterSecret = buf.array();
 
-                                // 6️⃣ Derive root + chain keys
+                                // ─── Now you can derive root + chain keys ─────────────────────────────────
+
+                                // 6️⃣ Derive root & chains (same as before)
                                 byte[] rootKey = hkdf(new byte[32], masterSecret, "X3DH".getBytes(UTF_8), 32);
                                 byte[] sendCK  = hkdfExpand(rootKey, "send".getBytes(UTF_8), 32);
                                 byte[] recvCK  = hkdfExpand(rootKey, "recv".getBytes(UTF_8), 32);
 
-                                // 7️⃣ **Initialize Double Ratchet with THEIR EPHEMERAL**, not SPub**
+                                // 7️⃣ Swap send/recv for the very first ratchet message:
                                 DoubleRatchetState dr = new DoubleRatchetState(
                                         rootKey,
-                                        myEphKP,      // our one-time keypair
-                                        theirEphPub,  // ← fixed: use initiator's ephemeral as dhTheirPub
-                                        sendCK,
-                                        recvCK
+                                        myEphKP,
+                                        theirEphPub,
+                                        recvCK,
+                                        sendCK
                                 );
+
+
 
                                 String peerId = Base64.getEncoder().encodeToString(hsam.getPeerIdentityPub());
                                 sessionStore.put(peerId, dr);
