@@ -47,6 +47,8 @@ CREATE TABLE handShake (
                            receiver varchar(255),
                            key_id INT,
                            ephemeral_Key blob,
+                           initiatorIdentityPub blob,
+                           initiatorSigningPub blob,
                            Foreign Key (key_id) REFERENCES oneTimeKeys(key_id) ON DELETE CASCADE
 );
 
