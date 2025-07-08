@@ -52,20 +52,20 @@ src/ <br>
 2. Run the SQL scripts:
 
 ```bash
-mysql -u your_username -p < src/src/CreateDataBase.sql
-mysql -u your_username -p your_database_name < src/src/CreateTables.sql
+mysql -u your_username -p < src/CreateDataBase.sql
+mysql -u your_username -p your_database_name < src/CreateTables.sql
 ```
 
 Configure your credentials inside:
 
 ```bash
-src/src/org/DataBase/DBConnect.java
+src/org/DataBase/DBConnect.java
 ```
 
 ## 🚀 Run the Server
 
 ```bash
-cd src/src
+cd src
 javac org/Server/*.java org/Packets/*.java org/Keys/*.java org/DataBase/*.java
 java org.Server.Main
 ```
@@ -73,7 +73,7 @@ java org.Server.Main
 ## 💻 Run the Client
 
 ```bash
-cd src/src
+cd src
 javac org/Client/*.java org/Packets/*.java org/Keys/*.java
 java org.Client.Main
 ```
