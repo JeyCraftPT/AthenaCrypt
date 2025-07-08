@@ -86,25 +86,44 @@ public class ClientHandler implements Runnable {
                 RegisterPacket reg = (RegisterPacket) packet;
                 System.out.println("Register attempt: " + reg.getUsername());
 
-                // 1) Call your DB layer to store username, password, and client's public key
+                // 1) Store in DB
                 String dbResult = DBConnect.RegiPOST(
                         reg.getUsername(),
                         reg.getPassword(),
                         reg.getRsaIdentityPub(),
-                        reg.getX25519IdentityPub(),   // ← send the identity‐pub too
+                        reg.getX25519IdentityPub(),
                         reg.getX25519SigningPub(),
                         reg.getSignature(),
                         0
                 );
 
-                // 2) Build an InfoPacket with the DB's result message
+                // 2) Send back the result
                 InfoPacket info = new InfoPacket(dbResult);
-
-                // 3) AES‐encrypt it and send back to client
-                byte[] resp = PacketUtils.encryptPacketAES(info, sessionKey);
-                output.writeObject(resp);
+                output.writeObject(PacketUtils.encryptPacketAES(info, sessionKey));
                 output.flush();
+
+                if (dbResult.toLowerCase().contains("success")) {
+                    // 3) Mark online
+                    this.username = reg.getUsername();
+                    DBConnect.goOnline(this.username);
+
+                    // 4) Tell the event listener “Login” so Main.users & handlers get populated
+                    eventListener.onClientAction(
+                            "Login",
+                            this.username,
+                            this.clientSocket,
+                            sentPacket -> { /* no‐op */ }
+                    );
+
+                    // 5) Send the user list just like in Login
+                    List<String> online = DBConnect.getOnlineUsers();
+                    UserListPacket ul = new UserListPacket(online);
+                    byte[] listEnc = PacketUtils.encryptPacketAES(ul, sessionKey);
+                    output.writeObject(listEnc);
+                    output.flush();
+                }
             }
+
             case "Login" -> {
                 LoginPacket lp = (LoginPacket)packet;
                 this.username = lp.getUsername();

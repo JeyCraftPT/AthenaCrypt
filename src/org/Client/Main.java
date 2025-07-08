@@ -107,37 +107,51 @@ public class Main {
                 System.out.print("New password: ");
                 String password = scanner.nextLine();
 
-                // 1) RSA identity-key
+                // 1) Generate RSA identity keypair
                 KeyPair userIdentityKeyPair = RSAKeys.generateKeyPair();
 
-                // 2) X25519 identity-key
+                // 2) Generate X25519 identity keypair
                 KeyPair x25519IdentityKeyPair =
                         KeyPairGenerator.getInstance("X25519").generateKeyPair();
-
+                // **store into your client‐wide fields** for the listener:
                 x25519IdentityPriv = x25519IdentityKeyPair.getPrivate();
                 x25519IdentityPub  = x25519IdentityKeyPair.getPublic();
 
-                // 3) X25519 signed-pre-key + RSA signature
+                // 3) Generate X25519 signed‐pre‐key + signature
                 KeyPair userSignedPreKeyPair =
                         KeyPairGenerator.getInstance("X25519").generateKeyPair();
                 Signature signer = Signature.getInstance("SHA256withRSA");
                 signer.initSign(userIdentityKeyPair.getPrivate());
                 signer.update(userSignedPreKeyPair.getPublic().getEncoded());
                 byte[] signedPreKeySignature = signer.sign();
-                // ← SAVE the signed-pre-key pair just like identity
+
+                // 4) Save all your private keys to disk
                 savePrivateKeyEncrypted(
-                userSignedPreKeyPair.getPrivate(),
-                password,
-                u + "_x25519_sprv_key.enc"
+                        userIdentityKeyPair.getPrivate(),
+                        password,
+                        u + "_private_key.enc"
+                );
+                savePrivateKeyEncrypted(
+                        x25519IdentityKeyPair.getPrivate(),
+                        password,
+                        u + "_x25519_identity_key.enc"
                 );
                 Files.write(
-                Paths.get(u + "_x25519_sprv_pub.enc"),
+                        Paths.get(u + "_x25519_identity_pub.enc"),
+                        x25519IdentityKeyPair.getPublic().getEncoded()
+                );
+                savePrivateKeyEncrypted(
+                        userSignedPreKeyPair.getPrivate(),
+                        password,
+                        u + "_x25519_sprv_key.enc"
+                );
+                Files.write(
+                        Paths.get(u + "_x25519_sprv_pub.enc"),
                         userSignedPreKeyPair.getPublic().getEncoded()
-                        );
-                System.out.println("🔐 X25519 signed-pre-key saved.");
+                );
+                System.out.println("🔐 Keys generated and saved.");
 
-
-                // 4) send RegisterPacket
+                // 5) Send the RegisterPacket
                 RegisterPacket reg = new RegisterPacket(
                         u,
                         password.getBytes(UTF_8),
@@ -149,65 +163,54 @@ public class Main {
                 output.writeObject(PacketUtils.encryptPacketAES(reg, sessionKey));
                 output.flush();
 
-                // 5) handle response
+                // 6) Handle server’s InfoPacket
                 InfoPacket info = (InfoPacket) PacketUtils
                         .decryptPacketAES((byte[]) input.readObject(), sessionKey);
                 System.out.println("[Server] " + info.getMessage());
 
                 if (info.getMessage().toLowerCase().contains("success")) {
-                    // save RSA identity private key
-                    savePrivateKeyEncrypted(
-                            userIdentityKeyPair.getPrivate(),
-                            password,
-                            u + "_private_key.enc"
-                    );
-                    System.out.println("🔐 Private key saved.");
-
-                    // ← NEW: save X25519 identity private key
-                    savePrivateKeyEncrypted(
-                            x25519IdentityKeyPair.getPrivate(),
-                            password,
-                            u + "_x25519_identity_key.enc"
-                    );
-                    System.out.println("🔐 X25519 identity key saved.");
-
-                    byte[] pubBytes = x25519IdentityKeyPair.getPublic().getEncoded();
-                    Files.write(Paths.get(u + "_x25519_identity_pub.enc"), pubBytes);
-                    System.out.println("🔐 X25519 identity public key saved.");
-
-                    // generate + send one-time keys
+                    // 7) Send one‐time keys
                     int N = 100;
-                    List<KeyPair> oneTimeKPs = new ArrayList<>(N);
                     KeyPairGenerator otpGen = KeyPairGenerator.getInstance("X25519");
-                    for (int i = 0; i < N; i++) {
-                        oneTimeKPs.add(otpGen.generateKeyPair());
-                    }
+                    List<KeyPair> oneTimeKPs = new ArrayList<>(N);
+                    for (int i = 0; i < N; i++) oneTimeKPs.add(otpGen.generateKeyPair());
                     for (KeyPair otp : oneTimeKPs) {
                         oneTimeKeysPacket pkt =
                                 new oneTimeKeysPacket(u, otp.getPublic().getEncoded());
-                        byte[] encrypted = PacketUtils.encryptPacketAES(pkt, sessionKey);
-                        output.writeObject(encrypted);
-                        output.flush();
+                        output.writeObject(PacketUtils.encryptPacketAES(pkt, sessionKey));
                     }
-                    saveOneTimeKeysEncrypted(oneTimeKPs, password,
-                            u + "_onetime_keys.enc");
-                    System.out.println("🔐 Saved "+N+" one-time keys.");
+                    saveOneTimeKeysEncrypted(oneTimeKPs, password, u + "_onetime_keys.enc");
+                    System.out.println("🔐 Saved " + N + " one-time keys.");
 
-                    // set session fields
+                    // ───── NEW ───── Wire up your X25519 keys into the ratchet refs:
+                    userIKPRef.set(new KeyPair(
+                            x25519IdentityPub,
+                            x25519IdentityPriv
+                    ));
+                    userSPKPRef.set(new KeyPair(
+                            userSignedPreKeyPair.getPublic(),
+                            userSignedPreKeyPair.getPrivate()
+                    ));
+
+                    // ───── NEW ───── Immediately consume the UserListPacket:
+                    UserListPacket ul = (UserListPacket) PacketUtils
+                            .decryptPacketAES((byte[]) input.readObject(), sessionKey);
+                    System.out.println("👥 Online users: " + ul.getUsers());
+
+                    // 8) Finalize your local session fields:
                     username = u;
                     userPass = password;
                     userPriv  = userIdentityKeyPair.getPrivate();
                     userPub   = userIdentityKeyPair.getPublic();
-                    userIKP   = userIdentityKeyPair;
-                    userSPKP  = userSignedPreKeyPair;
-                    x25519IdentityPriv = x25519IdentityKeyPair.getPrivate();
+
+                    // ───── NEW ───── Print your normal prompt so /select works:
+                    System.out.println("Type: /select <user>, /message <text>, /refresh, exit");
                 } else {
-                    userPriv = null;
                     System.err.println("Registration failed; aborting.");
                     return;
                 }
-
-            } else {
+            }
+            else {
                 // —— LOGIN FLOW ——
                 System.out.print("Username: ");
                 String u = scanner.nextLine();
