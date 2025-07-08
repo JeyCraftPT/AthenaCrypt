@@ -8,7 +8,6 @@ A Java-based client-server messaging system with end-to-end encryption, using AE
 ## 📁 File Structure
 
 src/ <br>
-└── src/ <br>
 ├── CreateDataBase.sql <br>
 ├── CreateTables.sql <br>
 └── org/ <br>
