@@ -24,7 +24,7 @@ public class DBConnect {
     private static final String DB_URL = "jdbc:mariadb://127.0.0.1:3306/ProjetoFinal";
 
     private static final String USER = "root";
-    private static final String PASSWORD = "";
+    private static final String PASSWORD = "ola";
 
     public static Connection getConnection() {
         try {

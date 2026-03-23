@@ -113,8 +113,8 @@ public class DoubleRatchetState implements Serializable {
     String b64(byte[] x) { return Base64.getEncoder().encodeToString(x); }
 
     // ————————————————
-// 1) Encrypt a plaintext → Message
-// ————————————————
+    // 1) Encrypt a plaintext → Message
+    // ————————————————
     public Message encrypt(byte[] plaintext) throws GeneralSecurityException {
         // derive the next send-message key
         //ratchetSend();
@@ -148,8 +148,8 @@ public class DoubleRatchetState implements Serializable {
     }
 
     // ————————————————
-// 2) Decrypt a received Message → plaintext
-// ————————————————
+    // 2) Decrypt a received Message → plaintext
+    // ————————————————
     /**
      * Decrypt a received ratchet Message → plaintext
      */
