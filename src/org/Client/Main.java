@@ -28,7 +28,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 // Verificar que Packets são enviados porque acho que se podem remover switch cases
 // Desenhar diagrama dos packets e remover os não usados
 // Implementar a capacidade de ir offline e quando se volta online ler as msg antigas
-// resolver erro de quando se muda a pessoa dar erro, investigar o pq
+// Resolver erro de quando se muda a pessoa dar erro, investigar o pq
+// Adicionar capacidade de mandar imagens e vídeos
 
 public class Main {
     private static final String SERVER_ADDRESS = "localhost";
